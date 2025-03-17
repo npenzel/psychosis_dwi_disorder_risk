@@ -1,4 +1,5 @@
-# Write the function to calculate the permutation set
+# Function to create the permuted datasets for PRONIA analyses.
+
 library(tidyverse)
 
 create_permutation <- function(df, num_perm){
