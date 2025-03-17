@@ -3,7 +3,6 @@ library(CCA)
 library(caret)
 library(dplyr)
 
-# load the data that I create in fat_pronia_paper_dti_V10.Rmd
 cca_dti_rop_chr_cv <- read.csv('simulated_data/cca_dti_rop_chr_for_cv.csv')
 cca_vars_rop_chr_cv <- read.csv('simulated_data/cca_vars_rop_chr_for_cv.csv')
 
