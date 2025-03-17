@@ -1,0 +1,2171 @@
+---
+title: "From Risk to Disorder: Diffusion-Weighted Imaging in Psychosis - simulated data"
+author: "Penzel N, Cho KIK et al., 2025"
+date: "`r Sys.Date()`"
+output: 
+  bookdown::html_document2:
+    toc: true  # Disable default TOC since you're creating a custom one
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+---
+
+```{r, echo=FALSE, results='asis'}
+cat('
+<div id="toc">
+  <!-- The TOC will be inserted here -->
+</div>
+<div id="content">
+')
+```
+
+# **About this report** {.unnumbered}
+```{r, results = 'asis', message = FALSE, echo = FALSE, warning = FALSE}
+message_report <- 'In this report, we use simulated data to replicate the main analyses from Penzel & Cho et al. (2025). This allows you to follow the analysis steps without access to the real PRONIA data, which is not publicly available. You can find the simulation script in this GitHub repository and run it using pronia_psychosis_risk_dwi_simulation.Rmd. Ensure your working directory is set to the repository folder downloaded from: https://github.com/npenzel/PSYCHOSIS_DWI_RISK_DISORDER. To set the working directory: setwd("/path_to_your_directory/PSYCHOSIS_DWI_RISK_DISORDER/"). For details on methods, reasoning, and background, please refer to the manuscript.'
+
+# Print the message in a styled text box
+cat(paste0('<div style="border: 2px solid #4CAF50; background-color: #eaffea; padding: 10px; border-radius: 5px; font-size: 13px;">', message_report, '</div>'))
+```
+
+```{r setup, include=FALSE, warning = FALSE}
+# -----------------------------------------------------------------------------#
+#                 Data Loading and Initial Transformations                     #
+# -----------------------------------------------------------------------------#
+
+# Load necessary libraries
+
+library(gtsummary)
+library(tidyverse)
+library(ggsci)
+library(broom)
+library(tidyr)
+library(ggbeeswarm)
+library(kableExtra)
+library(car)
+library(AICcmodavg)
+library(lubridate)
+library(emmeans)
+library(data4PCCAR)
+library(MASS)
+library(CCA)
+library(grid)
+library(rstatix)
+library(psych)
+library(corrplot)
+library(ggcorrplot)
+library(cowplot)
+library(DT)
+
+# Define regions of interest (ROIs) for analysis
+rois <- c("ACR", "ALIC", "BCC", "CGC", "CGH", "CP", "CST", "EC", "FX", "FX_ST",
+          "GCC", "ICP", "IFO", "ML", "PCR", "PLIC", "PTR", "RLIC", "SCC", "SCP",
+          "SCR", "SFO", "SLF", "SS", "UNC")
+
+# Note: This script is part of the simulated dataset analysis for 
+# "Penzel & Cho et al., 2025" (DOI will be provided upon publication).
+# If using any functions from this script, please refer to the repository README for citation details.
+
+# Load the simulated data
+pronia_sim <- read_csv('simulated_data/simulated_data.csv')%>%
+  mutate(sex = case_when(sex == '0' ~ 'male',
+                         sex == '1' ~ 'female'))%>%
+  # Calculate AverageFAt for each individual based on ROIs
+  rowwise()%>%
+  mutate(AverageFAt = mean(c_across(rois), na.rm = TRUE)) %>%
+  ungroup()  # Ungroup after rowwise operation
+
+# Load permutation sets for ROP/CHR, generated from permute_dataset.R
+perms_rop_chr <- read.csv('simulated_data/perm_rop_chr.csv')
+
+
+# -----------------------------------------------------------------------------#
+#       Prediction of Sex- and Age-Corrected FA-t Values for ROIs              #
+# -----------------------------------------------------------------------------#
+
+# Select healthy control (HC) data to model FA-t
+hc_fat_sim <- pronia_sim %>%
+  filter(Studygroup %in% 'HC')%>%
+  filter(!is.na(AverageFAt))
+
+# Select ROP (recent onset psychosis) data for further analysis
+rop_fat_sim <- pronia_sim %>%
+  filter(Studygroup %in% 'ROP')
+
+# Select CHR (clinical high risk) data for further analysis
+chr_fat_sim <- pronia_sim %>%
+  filter(Studygroup %in% 'CHR')
+
+# -----------------------------------------------------------------------------#
+#           Model Testing in Healthy Controls (HC) - FA-t Predictions           #
+# -----------------------------------------------------------------------------#
+
+# Test different fits to predict FA-t values in HC
+
+# 3 different models: linear (FA-t ~ age + sex), quadratic, and gamma model
+(linear_fat    <- lm(AverageFAt ~ age + sex, data = hc_fat_sim)) # 0.00212
+(quadratic_fat <- lm(AverageFAt ~ age + I(age^2) + sex, data = hc_fat_sim)) # 0.06868 (age and age^2 significant)
+(gamma_fat     <- glm(AverageFAt ~ age + sex, data = hc_fat_sim, family = Gamma(link = 'log')))
+
+# Adjusted R² for linear model, quadratic, and gamma model
+rSquared_linear    <- summary(linear_fat)$r.squared
+adjrSquared_linear <- 1 - (1 - rSquared_linear) * ((nrow(hc_fat_sim)-1)/(nrow(hc_fat_sim) - 2 - 1))
+rSquared_quadratic    <- summary(quadratic_fat)$r.squared
+adjrSquared_quadratic <- 1 - (1 - rSquared_quadratic) * ((nrow(hc_fat_sim)-1)/(nrow(hc_fat_sim) - 3 - 1))
+rSquared_gamma       <- 1 - (gamma_fat$deviance/gamma_fat$null.deviance)
+adjrSquared_gamma    <- 1 - (1 - rSquared_gamma) * ((nrow(hc_fat_sim)-1)/(nrow(hc_fat_sim) - 2 - 1))
+
+residuals_quadratic_fat <- rstandard(quadratic_fat) %>%
+  as.data.frame()%>%
+  rename(std_residuals = '.')
+predicted_quadratic_fat <- quadratic_fat$fitted.values%>%
+  as.data.frame()%>%
+  rename(predicted = '.')
+hc_fat_sim_residuals <- cbind(hc_fat_sim, residuals_quadratic_fat, predicted_quadratic_fat)
+
+# -----------------------------------------------------------------------------#
+#                       Predict FA-t Using the Selected Model                  #
+# -----------------------------------------------------------------------------#
+
+# Save predicted FA-t values for healthy controls (HC) using the quadratic model
+predicted_fat      <- data.frame(FAt_pred = predict(quadratic_fat, hc_fat_sim), age = hc_fat_sim$age, sex = hc_fat_sim$sex)
+
+# Apply the quadratic model to the recent-onset psychosis (ROP) group
+predicted_fat_rop <- rop_fat_sim %>%
+  mutate(predicted_fat = predict(quadratic_fat, data.frame(age, sex)))%>% # you can also do prediction-interval
+  mutate(deviation_fat = AverageFAt - predicted_fat)
+
+# Apply the quadratic model to the clinical high-risk (CHR) group
+predicted_fat_chr <- chr_fat_sim %>%
+  mutate(predicted_fat = predict(quadratic_fat, data.frame(age, sex)))%>% # you can also do prediction-interval
+  mutate(deviation_fat = AverageFAt - predicted_fat)
+
+# Apply the quadratic model to the healthy controls (HC) again for consistency
+predicted_fat_hc <- hc_fat_sim %>%
+  mutate(predicted_fat = predict(quadratic_fat, data.frame(age, sex)))%>% # you can also do prediction-interval
+  mutate(deviation_fat = AverageFAt - predicted_fat)
+
+# -----------------------------------------------------------------------------#
+#           Apply the Quadratic Function to All Regions of Interest (ROIs)     #
+# -----------------------------------------------------------------------------#
+
+# Initialize dataframes to store predictions for ROP, CHR, and HC groups
+predict_rop_fat_all <- rop_fat_sim %>%
+  dplyr::select(PSN)
+predict_chr_fat_all <- chr_fat_sim %>%
+  dplyr::select(PSN)
+predict_hc_fat_all  <- hc_fat_sim %>%
+  dplyr::select(PSN)
+
+# Include 'AverageFAt' along with ROIs for prediction
+rois_average_fat <- c(rois, 'AverageFAt')
+
+# Loop through each ROI and apply the quadratic model to predict FA-t values
+for (i in 1:length(rois_average_fat)){
+  
+  # Select relevant independent variables (ROI values) for healthy controls (HC)
+  independent_var <- hc_fat_sim %>%
+    dplyr::select(rois_average_fat[i]) %>% unlist()%>% as.numeric()
+  age_var <- hc_fat_sim %>% dplyr::select(age)%>% unlist()%>% as.numeric()
+  sex_var <- hc_fat_sim %>% dplyr::select(sex)%>% unlist()%>% as.character()
+  
+  # Fit the quadratic model for healthy controls
+  predict_hc <- lm(independent_var ~ age_var + sex_var + I(age_var^2))
+  
+  # Apply the model to the ROP group
+  rop2predict <- rop_fat_sim %>%
+    dplyr::select(rois_average_fat[i], age, sex)%>% # first select the vars of interest
+    rename(independent_var = rois_average_fat[i], # rename them that they match the HC-model names
+           age_var = age, 
+           sex_var = sex)%>%
+    mutate(sex_var = as.character(sex_var))%>%
+    mutate(predicted_fat_roi = predict(predict_hc, data.frame(age_var, sex_var)),# apply the HC-model
+           deviation         = independent_var - predicted_fat_roi)%>%  
+    dplyr::select(-c(age_var, sex_var)) 
+  # remove the variables from the data-frame that are not needed
+  colnames(rop2predict) <- c(rois_average_fat[i], paste0(rois_average_fat[i], '_predicted'),
+                             paste0(rois_average_fat[i], '_dev'))
+  predict_rop_fat_all <- predict_rop_fat_all %>% # combine the different rois
+    cbind(rop2predict)
+  
+  # Apply the model to the CHR group
+  chr2predict <- chr_fat_sim %>%
+    dplyr::select(rois_average_fat[i], age, sex)%>% # first select the vars of interest
+    rename(independent_var = rois_average_fat[i], # rename them that they match the HC-model names
+           age_var = age, 
+           sex_var = sex)%>%
+    mutate(sex_var = as.character(sex_var))%>%
+    mutate(predicted_fat_roi = predict(predict_hc, data.frame(age_var, sex_var)),# apply the HC-model
+           deviation         = independent_var - predicted_fat_roi)%>%
+    dplyr::select(-c(age_var, sex_var)) 
+  # remove the variables from the data-frame that are not needed
+  colnames(chr2predict) <- c(rois_average_fat[i], paste0(rois_average_fat[i], '_predicted'),
+                             paste0(rois_average_fat[i], '_dev'))
+  predict_chr_fat_all <- predict_chr_fat_all %>% # combine the different rois
+    cbind(chr2predict)
+  
+  # Apply the model to the HC group (for comparison)
+  hc2predict <- hc_fat_sim %>%
+    dplyr::select(rois_average_fat[i], age, sex)%>% # first select the vars of interest
+    rename(independent_var = rois_average_fat[i], # rename them that they match the HC-model names
+           age_var = age, 
+           sex_var = sex)%>%
+    mutate(sex_var = as.character(sex_var))%>%
+    mutate(predicted_fat_roi = predict(predict_hc, data.frame(age_var, sex_var)),# apply the HC-model
+           deviation         = independent_var - predicted_fat_roi)%>%
+    dplyr::select(-c(age_var, sex_var)) 
+  # remove the variables from the data-frame that are not needed
+  colnames(hc2predict) <- c(rois_average_fat[i], paste0(rois_average_fat[i], '_predicted'),
+                             paste0(rois_average_fat[i], '_dev'))
+  predict_hc_fat_all <- predict_hc_fat_all %>% # combine the different rois
+    cbind(hc2predict)
+}
+
+# ------------------------------------------------------------------------------#
+# Combine Predictions with the Original Datasets                                #
+# ------------------------------------------------------------------------------#
+
+# Combine the predicted FA-t values and deviations for ROP group
+rop_final_fat <- predict_rop_fat_all %>%
+  dplyr::select(c(PSN, ends_with('predicted'), ends_with('dev')))
+
+# Combine the predicted FA-t values and deviations for CHR group
+chr_final_fat <- predict_chr_fat_all %>%
+  dplyr::select(c(PSN, ends_with('predicted'), ends_with('dev')))
+
+# Combine the predicted FA-t values and deviations for HC group
+hc_final_fat <- predict_hc_fat_all %>%
+  dplyr::select(c(PSN, ends_with('predicted'), ends_with('dev')))
+
+# Merge the ROP, CHR, and HC prediction dataframes by row binding them
+rop_chr_hc_fat <- rop_final_fat %>%
+  rbind(., chr_final_fat) %>%
+  rbind(., hc_final_fat)
+
+# Join the above merged data (ROP, CHR, HC) with the pronia_sim dataframe using 
+# the 'PSN' column
+tbss_final_fat <- pronia_sim %>%
+  left_join(., rop_chr_hc_fat, by = 'PSN')
+
+
+# ------------------------------------------------------------------------------#
+# Creating the Demographics Table with Selected Variables                       #
+# ------------------------------------------------------------------------------#
+
+# Create a new table with the demographics data, focusing on Studygroups (CHR, ROP, HC)
+demo_for_table <- tbss_final_fat %>% 
+  # Filter only the groups of interest
+  filter(Studygroup %in% c('CHR', 'ROP', 'HC'))%>% 
+  as.data.frame(.)%>%
+  # Group by Studygroup to calculate summary statistics per group
+  group_by(Studygroup)%>% 
+  # Calculate various summary statistics for each Studygroup (mean, SD, count for each variable)
+  mutate(total_count = n(),
+         mean_age = mean(age, na.rm = TRUE),
+         sd_age = sd(age, na.rm = TRUE),
+         mean_gaf_life = mean(GAF_S_LifeTime_Screening, na.rm = TRUE),
+         sd_gaf_life = sd(GAF_S_LifeTime_Screening, na.rm = TRUE),
+         mean_gaf_current = mean(GAF_S_PastMonth_Screening, na.rm = TRUE),
+         sd_gaf_current = sd(GAF_S_PastMonth_Screening, na.rm = TRUE),
+         mean_gaf_di_life = mean(GAF_DI_LifeTime_Screening, na.rm = TRUE),
+         sd_gaf_di_life = sd(GAF_DI_LifeTime_Screening, na.rm = TRUE),
+         mean_gaf_di_current = mean(GAF_DI_PastMonth_Screening, na.rm = TRUE),
+         sd_gaf_di_current = sd(GAF_DI_PastMonth_Screening, na.rm = TRUE),
+         mean_exposome = mean(exposome_score, na.rm = TRUE),
+         sd_exposome = sd(exposome_score, na.rm = TRUE),
+         mean_sips_p = mean(sips_p_t0, na.rm = TRUE),
+         sd_sips_p = sd(sips_p_t0, na.rm = TRUE),
+         mean_sips_n = mean(sips_n_t0, na.rm = TRUE),
+         sd_sips_n = sd(sips_n_t0, na.rm = TRUE),
+         mean_sips_g = mean(sips_g_t0, na.rm = TRUE),
+         sd_sips_g = sd(sips_g_t0, na.rm = TRUE),
+         mean_sips_d = mean(sips_d_t0, na.rm = TRUE),
+         sd_sips_d = sd(sips_d_t0, na.rm = TRUE),
+         mean_bdi = mean(bdi_t0, na.rm = TRUE),
+         sd_bdi = sd(bdi_t0, na.rm = TRUE),
+         mean_cpze = mean(CPZE_cum_sum, na.rm = TRUE),
+         sd_cpze = sd(CPZE_cum_sum, na.rm = TRUE),
+         mean_wais_v = mean(wais_v, na.rm = TRUE),
+         sd_wais_v = sd(wais_v, na.rm = TRUE),
+         mean_wais_mr = mean(wais_mr, na.rm = TRUE),
+         sd_wais_mr = sd(wais_mr, na.rm = TRUE),
+         mean_spia = mean(spia_sum_t0, na.rm = TRUE),
+         sd_spia = sd(spia_sum_t0, na.rm = TRUE)
+         )%>%
+  ungroup()%>%
+  group_by(Studygroup, sex)%>%
+  mutate(sex_count = n())%>%
+  ungroup()%>%
+  group_by(Studygroup)%>%
+  mutate(male_count = sex_count[sex == 'male'][1],
+         female_count = sex_count[sex == 'female'][1])%>%
+  ungroup()%>%
+  group_by(Studygroup, uhr_1stdegree)%>%
+  mutate(familial_count = n())%>%
+  ungroup()%>%
+  group_by(Studygroup)%>%
+  mutate(first_degree_yes = 
+           familial_count[uhr_1stdegree == 1][1],
+         first_degree_no = 
+           familial_count[uhr_1stdegree == 0][1],
+         all_known_first_degree = first_degree_yes + first_degree_no)%>%
+  distinct(Studygroup, .keep_all = TRUE)%>%
+  mutate(percent_female = female_count/total_count,
+         percent_1st_degree = first_degree_yes/total_count)%>%
+  dplyr::select(c(Studygroup, total_count, female_count, percent_female,
+                  first_degree_yes, percent_1st_degree,
+                  starts_with(c('mean_', 'sd_'))))%>%
+  arrange(Studygroup)
+
+# ------------------------------------------------------------------------------#
+# Format and Modify Demographics Table                                          #
+# ------------------------------------------------------------------------------#
+
+# Round numeric columns related to means and standard deviations to 2 decimal places,
+# and format percentage columns (female and first-degree relatives)
+table_data <- demo_for_table %>%
+  mutate(across(matches('mean|sd'), ~ round(., digits = 2)),
+         percent_female = round(percent_female*100, digits = 2),
+         percent_1st_degree = round(percent_1st_degree*100, digits = 2))%>%
+  mutate_all(as.character)%>%
+  rename(Total = total_count)%>%
+  unite('Female (%)', c(female_count, percent_female))%>%
+  mutate(`Female (%)` = gsub('_', ' (', `Female (%)`),
+         `Female (%)` = paste0(`Female (%)`, ')', sep = ''))%>%
+  unite('1st degree relative (%)', c(first_degree_yes, percent_1st_degree))%>%
+  mutate(`1st degree relative (%)` = gsub('_', ' (', `1st degree relative (%)`),
+         `1st degree relative (%)` = paste0(`1st degree relative (%)`, ')', sep = ''))%>%
+  unite('Age (mean [SD])', c(mean_age, sd_age))%>%
+  mutate(`Age (mean [SD])` = gsub('_', ' [', `Age (mean [SD])`),
+         `Age (mean [SD])` = paste0(`Age (mean [SD])`, ']', sep = ''))%>%
+  unite('GAF symptoms: Life (mean [SD])', c(mean_gaf_life, sd_gaf_life))%>%
+  mutate(`GAF symptoms: Life (mean [SD])` = gsub('_', ' [', `GAF symptoms: Life (mean [SD])`),
+         `GAF symptoms: Life (mean [SD])` = paste0(`GAF symptoms: Life (mean [SD])`, ']', sep = ''))%>%
+  unite('GAF symptoms: Past Month (mean [SD])', c(mean_gaf_current, sd_gaf_current))%>%
+  mutate(`GAF symptoms: Past Month (mean [SD])` = gsub('_', ' [', `GAF symptoms: Past Month (mean [SD])`),
+         `GAF symptoms: Past Month (mean [SD])`=paste0(`GAF symptoms: Past Month (mean [SD])`, ']',sep = ''))%>%
+  unite('GAF disability: Life (mean [SD])', c(mean_gaf_di_life, sd_gaf_di_life))%>%
+  mutate(`GAF disability: Life (mean [SD])` = gsub('_', ' [', `GAF disability: Life (mean [SD])`),
+         `GAF disability: Life (mean [SD])` = paste0(`GAF disability: Life (mean [SD])`, ']', sep = ''))%>%
+  unite('GAF disability: Past Month (mean [SD])', c(mean_gaf_di_current, sd_gaf_di_current))%>%
+  mutate(`GAF disability: Past Month (mean [SD])` = gsub('_', ' [', `GAF disability: Past Month (mean [SD])`),
+         `GAF disability: Past Month (mean [SD])`=paste0(`GAF disability: Past Month (mean [SD])`, ']',sep = ''))%>%
+  unite('SIPS-P (mean [SD])', c(mean_sips_p, sd_sips_p))%>%
+  mutate(`SIPS-P (mean [SD])` = gsub('_', ' [', `SIPS-P (mean [SD])`),
+         `SIPS-P (mean [SD])`=paste0(`SIPS-P (mean [SD])`, ']',sep = ''))%>%
+  unite('SIPS-N (mean [SD])', c(mean_sips_n, sd_sips_n))%>%
+  mutate(`SIPS-N (mean [SD])` = gsub('_', ' [', `SIPS-N (mean [SD])`),
+         `SIPS-N (mean [SD])`=paste0(`SIPS-N (mean [SD])`, ']',sep = ''))%>%
+  unite('SIPS-G (mean [SD])', c(mean_sips_g, sd_sips_g))%>%
+  mutate(`SIPS-G (mean [SD])` = gsub('_', ' [', `SIPS-G (mean [SD])`),
+         `SIPS-G (mean [SD])`=paste0(`SIPS-G (mean [SD])`, ']',sep = ''))%>%
+  unite('SIPS-D (mean [SD])', c(mean_sips_d, sd_sips_d))%>%
+  mutate(`SIPS-D (mean [SD])` = gsub('_', ' [', `SIPS-D (mean [SD])`),
+         `SIPS-D (mean [SD])`=paste0(`SIPS-D (mean [SD])`, ']',sep = ''))%>%
+  unite('SPI-A (mean [SD])', c(mean_spia, sd_spia))%>%
+  mutate(`SPI-A (mean [SD])` = gsub('_', ' [', `SPI-A (mean [SD])`),
+         `SPI-A (mean [SD])`=paste0(`SPI-A (mean [SD])`, ']',sep = ''))%>%
+  unite('WAIS-V (mean [SD])', c(mean_wais_v, sd_wais_v))%>%
+  mutate(`WAIS-V (mean [SD])` = gsub('_', ' [', `WAIS-V (mean [SD])`),
+         `WAIS-V (mean [SD])`=paste0(`WAIS-V (mean [SD])`, ']',sep = ''))%>%
+  unite('WAIS-MR (mean [SD])', c(mean_wais_mr, sd_wais_mr))%>%
+  mutate(`WAIS-MR (mean [SD])` = gsub('_', ' [', `WAIS-MR (mean [SD])`),
+         `WAIS-MR (mean [SD])`=paste0(`WAIS-MR (mean [SD])`, ']',sep = ''))%>%
+  unite('Exposome-score (mean [SD])', c(mean_exposome, sd_exposome))%>%
+  mutate(`Exposome-score (mean [SD])` = gsub('_', ' [', `Exposome-score (mean [SD])`),
+         `Exposome-score (mean [SD])`=paste0(`Exposome-score (mean [SD])`, ']',sep = ''))%>%
+  unite('BDI sum (mean [SD])', c(mean_bdi, sd_bdi))%>%
+  mutate(`BDI sum (mean [SD])` = gsub('_', ' [', `BDI sum (mean [SD])`),
+         `BDI sum (mean [SD])`=paste0(`BDI sum (mean [SD])`, ']',sep = ''))%>%
+  unite('CPZE cumulative lifetime (mean [SD])', c(mean_cpze, sd_cpze))%>%
+  mutate(`CPZE cumulative lifetime (mean [SD])` = gsub('_', ' [', `CPZE cumulative lifetime (mean [SD])`),
+         `CPZE cumulative lifetime (mean [SD])`=paste0(`CPZE cumulative lifetime (mean [SD])`, ']',sep = ''))%>%
+  mutate_all(as.character)
+
+# ------------------------------------------------------------------------------#
+# Finalize the demographics table by pivoting it into long format, then widen it 
+# based on the 'Studygroup' and the associated values for each variable.
+# ------------------------------------------------------------------------------#
+
+# Pivot the table into long format by converting the columns (except 'Studygroup') into 'variables' and 'values'.
+final_table <- table_data %>%
+  pivot_longer(cols = -c('Studygroup'), names_to = 'variables', values_to = 'values')%>%
+  unite('separator', c(Studygroup), sep = '_')%>%
+  pivot_wider(names_from = separator, values_from = values)%>%
+  dplyr::select(variables, HC, ROP, CHR)
+
+# ------------------------------------------------------------------------------#
+# Create subsets of the data for working with specific study groups individually.
+# These subsets will be used for further analyses or visualizations for each group.
+# ------------------------------------------------------------------------------#
+
+rop_hc  <- tbss_final_fat %>% filter(Studygroup %in% c('ROP', 'HC'))
+chr_hc  <- tbss_final_fat %>% filter(Studygroup %in% c('CHR', 'HC'))
+rop_chr <- tbss_final_fat %>% filter(Studygroup %in% c('ROP', 'CHR'))
+rop     <- tbss_final_fat %>% filter(Studygroup %in% c('ROP'))
+chr     <- tbss_final_fat %>% filter(Studygroup %in% c('CHR'))
+```
+
+```{r load_functions, echo = FALSE, warning = FALSE, message=FALSE}
+# ------------------------------------------------------------------------------#
+# Load the necessary functions from external R scripts for further analyses.
+# These functions are assumed to be in the current working directory or specified path.
+# ------------------------------------------------------------------------------#
+source('center_function.R')
+source('cca_function.R')
+source('permute_cca_function.R')
+source('bootstrap_cca_function.R')
+```
+
+# The Sample
+
+## Demographics
+Shows the sociodemographic variables of the data simulated based on means and SD from the original PRONIA sample.
+```{r echo = FALSE, warning = FALSE, message=FALSE}
+kbl(final_table) %>%
+  kable_classic(full_width = T, html_font = "Cambria")%>%
+    row_spec(0, extra_css = "display: none;")%>%
+    kable_styling(bootstrap_options = c("striped"),
+                  position = "center")%>%
+    column_spec(2:4, extra_css = "text-align: center; vertical-align: middle;")%>%
+  add_header_above(c(' ' = 1,
+                     'healthy\ncontrols' = 1, 
+                     'recent-onset\npsychosis' = 1,
+                     'clinical\nhigh-risk' = 1))
+```
+
+
+# Data investigation
+Here, we investigate the data in terms of normality, distribution and association with age and sex.
+
+## Average FAt across 3 groups {.tabset}
+
+### Figure Average FAt
+```{r echo = FALSE,fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+# Average FAt for the three groups
+tbss_final_fat %>%
+  filter(Studygroup %in% c('CHR', 'HC', 'ROP'))%>%
+  ggplot(aes(x = Studygroup, y = AverageFAt, fill = Studygroup))+
+  ggdist::stat_halfeye(
+    adjust = 0.5, 
+    justification = -0.2, 
+    .width = 0,
+    point_colour = NA)+
+  geom_boxplot(width = .12, outlier.color = 'black', alpha = 0.5)+
+  theme(axis.title.x = element_blank(),
+        legend.position = 'bottom')+
+  scale_x_discrete(limits = c('HC','CHR','ROP'),
+                   labels = c("CHR" = "clinical\nhigh-risk\nN=183",
+                              "ROP" = "recent-onset\npsychosis\nN=206",
+                              'HC' = 'healthy\ncontrols\nN=298'))+
+  scale_fill_manual(values = c('ROP' = '#e69c9c',
+                               'CHR' = '#8ba6b1',
+                               'HC' =  '#98c692'))+
+  ylab('Average fractional anisotropy - tissue across\n25 ENIGMA regions of interest')+
+  theme_bw()+
+  theme(legend.position = 'none',
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 13))
+```
+
+### Code
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+# Filter the data to include only the three groups: 'CHR', 'HC', and 'ROP'
+tbss_final_fat %>%
+  filter(Studygroup %in% c('CHR', 'HC', 'ROP'))%>%
+  # Create a ggplot with 'Studygroup' on the x-axis and 'AverageFAt' on the y-axis
+  ggplot(aes(x = Studygroup, y = AverageFAt, fill = Studygroup))+
+  # Add a half-eye plot from the ggdist package for visualizing the distribution
+  ggdist::stat_halfeye(
+    adjust = 0.5,                   # Adjust the smoothness of the half-eye plot
+    justification = -0.2,           # Position the plot to the left
+    .width = 0,                     
+    point_colour = NA)+             # Remove points for clarity
+  # Add a boxplot for the data with customizations
+  geom_boxplot(width = .12,                  # Narrow box width
+               outlier.color = 'black',      # Color outliers in black 
+               alpha = 0.5)+                 # Make boxplot semi-transparent
+  # Customize the axis titles and legend position
+  theme(axis.title.x = element_blank(),
+        legend.position = 'bottom')+
+  scale_x_discrete(limits = c('HC','CHR','ROP'),
+                   labels = c("CHR" = "clinical\nhigh-risk\nN=183",
+                              "ROP" = "recent-onset\npsychosis\nN=206",
+                              'HC' = 'healthy\ncontrols\nN=298'))+
+  scale_fill_manual(values = c('ROP' = '#e69c9c',
+                               'CHR' = '#8ba6b1',
+                               'HC' =  '#98c692'))+
+  ylab('Average fractional anisotropy - tissue across\n25 ENIGMA regions of interest')+
+  theme_bw()+
+  theme(legend.position = 'none',
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 13))
+```
+
+## {-}
+
+## Assumptions: Normality {.tabset}
+Although our datasets have a sample size that supports parametric tests, we still assess the assumptions of normality by examining the distribution and QQ-plots.
+
+### Figure Distribution
+```{r assumptions normality, echo = FALSE,fig.width=5,fig.height=6, warning = FALSE, message=FALSE}
+tbss_final_fat %>%
+  filter(Studygroup %in% c('CHR', 'HC', 'ROP'))%>%
+  ggplot(aes(x = AverageFAt, color = Studygroup, fill = Studygroup))+
+  geom_histogram(aes(y = ..density..))+
+  scale_fill_manual(values = c('ROP' = '#e69c9c',
+                               'CHR' = '#8ba6b1',
+                               'HC' =  '#98c692'))+
+  scale_color_manual(values = c('ROP' = '#e69c9c',
+                               'CHR' = '#8ba6b1',
+                               'HC' =  '#98c692'),
+                     labels = c("CHR" = "clinical\nhigh-risk\nN=183",
+                               "ROP" = "recent-onset\npsychosis\nN=207",
+                               'HC' = 'healthy\ncontrols\nN=298'))+
+  theme_bw()+
+  theme(legend.position = 'none',
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 13))+
+  stat_function(fun = dnorm, coor = 'black',
+                args = list(mean = mean(tbss_final_fat$AverageFAt), 
+                            sd = sd(tbss_final_fat$AverageFAt)), size = 1)+
+  facet_wrap(.~Studygroup, ncol = 1)
+```
+
+### Code Distribution
+```{r code normality, echo = TRUE, fig.width=5,fig.height=6, warning = FALSE, message=FALSE}
+tbss_final_fat %>%
+  filter(Studygroup %in% c('CHR', 'HC', 'ROP'))%>%
+  ggplot(aes(x = AverageFAt, color = Studygroup, fill = Studygroup))+
+  geom_histogram(aes(y = ..density..))+
+  scale_fill_manual(values = c('ROP' = '#e69c9c',
+                               'CHR' = '#8ba6b1',
+                               'HC' =  '#98c692'))+
+  scale_color_manual(values = c('ROP' = '#e69c9c',
+                               'CHR' = '#8ba6b1',
+                               'HC' =  '#98c692'),
+                     labels = c("CHR" = "clinical\nhigh-risk\nN=183",
+                               "ROP" = "recent-onset\npsychosis\nN=207",
+                               'HC' = 'healthy\ncontrols\nN=298'))+
+  theme_bw()+
+  theme(legend.position = 'none',
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 13))+
+  stat_function(fun = dnorm, coor = 'black',
+                args = list(mean = mean(tbss_final_fat$AverageFAt), 
+                            sd = sd(tbss_final_fat$AverageFAt)), size = 1)+
+  facet_wrap(.~Studygroup, ncol = 1)
+```
+
+### Figure Normality: QQ-plot
+```{r assumptions qqplot, echo = FALSE,fig.width=5,fig.height=6, warning = FALSE, message=FALSE}
+tbss_final_fat %>%
+  filter(Studygroup %in% c('ROP', 'CHR', 'HC'))%>%
+  ggplot(., aes(sample = AverageFAt))+ 
+  stat_qq()+
+  facet_wrap(.~Studygroup, ncol = 1)+
+  theme_bw()
+```
+
+### Code Normality: QQ-plot
+```{r code qqplot, echo = TRUE,fig.width=5,fig.height=6, warning = FALSE, message=FALSE}
+tbss_final_fat %>%
+  filter(Studygroup %in% c('ROP', 'CHR', 'HC'))%>%
+  ggplot(., aes(sample = AverageFAt))+ 
+  stat_qq()+
+  facet_wrap(.~Studygroup, ncol = 1)+
+  theme_bw()
+```
+
+## {-}
+
+## Association with age and sex {.tabset}
+
+### Best model fit
+```{r, echo = FALSE, warning = FALSE, messages = FALSE, results = TRUE}
+### Best model fit
+# ------------------------------------------------------------------------------ 
+# Test for the best model fit using AIC
+# ------------------------------------------------------------------------------
+# We defined and tested three models: linear, quadratic, and gamma.
+# To compare models using AIC, we must convert the linear and quadratic models 
+# into a more generic form (glm).
+linear_fat_glm <- glm(linear_fat)
+quadratic_fat_glm <- glm(quadratic_fat)
+
+# Create a list of the models to be compared
+model.set <- list(linear_fat_glm, quadratic_fat_glm, gamma_fat)
+model.names <- c('linear', 'quadratic', 'gamma')
+
+# Compare the models using AIC (lower AIC indicates better fit)
+aictab_model_results_fat <- aictab(model.set, modnames = model.names)
+
+# AIC interpretation:
+# A lower AIC value indicates a better-fitting model.
+# A model with a delta-AIC (difference in AIC values) greater than 2 
+# is considered significantly better than the competing model.
+
+# Prepare the dataset for model fitting (including relevant variables)
+model_all <- tbss_final_fat %>%
+  filter(Studygroup %in% c('ROP', 'CHR', 'HC'))%>%
+  dplyr::select(PSN, AverageFAt, AverageFAt_predicted, AverageFAt_dev,
+                age,sex, Studygroup)
+```
+
+We compared three model fits (linear, quadratic, and gamma) for predicting 
+average fractional anisotropy (FA-t) using age and sex as independent variables. 
+Model performance was compared using AIC. For the simulated data, the model with 
+the lowest AIC was selected `r aictab_model_results_fat$Modnames[1]`.
+This model explained `r round(aictab_model_results_fat$AICcWt[1]*100, digits = 2)` % 
+of the variance across all models.
+
+For the real PRONIA data, the quadratic model providd the best fit,
+so we continue using the quadratic model for both the simulated and real data.
+
+### Code: best model fit
+```{r, echo = TRUE, warning = FALSE, messages = FALSE, results = TRUE}
+### Best model fit
+# ------------------------------------------------------------------------------ 
+# Test for the best model fit using AIC
+# ------------------------------------------------------------------------------
+# We defined and tested three models: linear, quadratic, and gamma.
+# To compare models using AIC, we must convert the linear and quadratic models 
+# into a more generic form (glm).
+linear_fat_glm <- glm(linear_fat)
+quadratic_fat_glm <- glm(quadratic_fat)
+
+# Create a list of the models to be compared
+model.set <- list(linear_fat_glm, quadratic_fat_glm, gamma_fat)
+model.names <- c('linear', 'quadratic', 'gamma')
+
+# Compare the models using AIC (lower AIC indicates better fit)
+aictab_model_results_fat <- aictab(model.set, modnames = model.names)
+
+# AIC interpretation:
+# A lower AIC value indicates a better-fitting model.
+# A model with a delta-AIC (difference in AIC values) greater than 2 
+# is considered significantly better than the competing model.
+
+# Prepare the dataset for model fitting (including relevant variables)
+model_all <- tbss_final_fat %>%
+  filter(Studygroup %in% c('ROP', 'CHR', 'HC'))%>%
+  dplyr::select(PSN, AverageFAt, AverageFAt_predicted, AverageFAt_dev,
+                age,sex, Studygroup)
+```
+
+### Figure: Model fit
+```{r echo = FALSE,fig.width=9,fig.height=5, warning = FALSE, message=FALSE}
+facet_label = c('HC' = 'healthy controls N=298',
+                'CHR' = 'clinical high-risk N=183',
+                'ROP' = 'recent-onset psychosis N=206')
+model_all$Studygroup <- factor(model_all$Studygroup, levels = c('HC', 'CHR', 
+                                                                'ROP'))
+model_fit_data <- model_all %>%
+  ggplot(aes(x = age, y = AverageFAt, color = Studygroup)) +
+  stat_smooth(method = 'lm', formula = y ~ x + I(x^2), se = FALSE,
+              show.legend = FALSE)+
+  geom_point(show.legend = FALSE)+
+  scale_color_manual(values = c('ROP' = '#e69c9c',
+                                'CHR' = '#8ba6b1',
+                                'HC' =  '#98c692'),
+                     labels = c("CHR" = "clinical\nhigh-risk\nN=183",
+                                "ROP" = "recent-onset\npsychosis\nN=206",
+                                'HC' = 'healthy\ncontrols\nN=298'))+
+  ylab('Average fractional anisotropy - tissue across\n25 ENIGMA regions of interest')+
+  theme_bw()+
+  theme(axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 13))+
+  facet_grid(sex~ Studygroup, labeller = labeller(Studygroup = facet_label))
+model_fit_data
+```
+
+### Code: Model fit
+```{r echo = TRUE,fig.width=9,fig.height=5, warning = FALSE, message=FALSE}
+facet_label = c('HC' = 'healthy controls N=298',
+                'CHR' = 'clinical high-risk N=183',
+                'ROP' = 'recent-onset psychosis N=206')
+model_all$Studygroup <- factor(model_all$Studygroup, levels = c('HC', 'CHR', 
+                                                                'ROP'))
+model_fit_data <- model_all %>%
+  ggplot(aes(x = age, y = AverageFAt, color = Studygroup)) +
+  stat_smooth(method = 'lm', formula = y ~ x + I(x^2), se = FALSE,
+              show.legend = FALSE)+
+  geom_point(show.legend = FALSE)+
+  scale_color_manual(values = c('ROP' = '#e69c9c',
+                                'CHR' = '#8ba6b1',
+                                'HC' =  '#98c692'),
+                     labels = c("CHR" = "clinical\nhigh-risk\nN=183",
+                                "ROP" = "recent-onset\npsychosis\nN=206",
+                                'HC' = 'healthy\ncontrols\nN=298'))+
+  ylab('Average fractional anisotropy - tissue across\n25 ENIGMA regions of interest')+
+  theme_bw()+
+  theme(axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 13))+
+  facet_grid(sex~ Studygroup, labeller = labeller(Studygroup = facet_label))
+model_fit_data
+```
+
+## {-}
+
+# Group comparison
+
+## ANCOVA FAt ROIs {.tabset}
+
+### Result: ANCOVA
+```{r, context="server", echo = FALSE, warning = FALSE}
+# ------------------------------------------------------------------------------
+# ANCOVA Analysis for Three Groups (ROP, HC, and CHR)
+# ------------------------------------------------------------------------------
+
+# Prepare the data for ANCOVA analysis by selecting relevant columns:
+# Studygroup (group variable), PSN, rois (regions of interest), age, and sex
+anova_3groups_result <- tbss_final_fat %>%
+  dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+  dplyr::select(-contains('Average'))%>%
+  filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+  # Reshape the 'rois' (regions of interest) from wide to long format
+  pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+  # Group by the 'roi' variable for performing ANCOVA per region
+  group_nest(roi) %>%
+  # Perform ANCOVA (Analysis of Covariance) for each region of interest
+  mutate(anova_result = map(data, ~ Anova(aov(value ~ Studygroup + age +
+                                              I(age^2) + sex, 
+                                              data = .x), 
+                                          type = 3, test.statistic = 'F'))) %>%
+  # Tidy up the ANOVA results to make them easier to work with
+  mutate(tidy_anova = map(anova_result, ~ tidy(.))) %>%
+  # Unnest the tidied ANOVA results into a data frame for easy interpretation
+  unnest(tidy_anova) %>%
+  # For each term in the ANOVA results, adjust p-values for multiple comparisons using FDR correction
+  group_by(term) %>%
+  mutate(p_corr = p.adjust(p.value, method = 'fdr', n = length(p.value)),
+         f_value = if_else(term == 'Studygroup', statistic, NA_real_)) %>%
+  # Remove the intercept term from the results, as it's not relevant to our analysis
+  filter(!str_detect(term, '(Intercept)'))%>%
+  ungroup()%>%
+  # For each ROI, calculate the total sum of squares (SS) across all terms
+  group_by(roi)%>%
+  mutate(ss_total = sum(sumsq))%>%
+  ungroup()%>%
+  # Calculate eta-squared for effect size for the 'Studygroup' term
+  mutate(eta_square = sumsq/ss_total)%>%
+  filter(term == 'Studygroup') %>%
+  # Sort the results by the F-statistic in descending order (to see the most significant ROIs)
+  arrange(-statistic) %>%
+  dplyr::select(-c(data, anova_result, ss_total, sumsq))
+
+# Filter the results to identify regions of interest (ROIs) with significant 
+# effects (p-value < 0.05 after correction)
+significant_rois_3groups <- anova_3groups_result %>%
+  filter(p_corr < 0.05)
+
+# Display the results in an interactive datatable with options to export to CSV, PDF, etc.
+datatable(anova_3groups_result, extensions = 'Buttons', options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'pdf', 'print'),
+  pageLength = 25 # Change this to the number of rows you want to display
+  ))
+```
+
+### Code: ANCOVA
+```{r, echo = TRUE, warning = FALSE, results = FALSE}
+# ------------------------------------------------------------------------------
+# ANCOVA Analysis for Three Groups (ROP, HC, and CHR)
+# ------------------------------------------------------------------------------
+
+# Prepare the data for ANCOVA analysis by selecting relevant columns:
+# Studygroup (group variable), PSN, rois (regions of interest), age, and sex
+anova_3groups_result <- tbss_final_fat %>%
+  dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+  dplyr::select(-contains('Average'))%>%
+  filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+  # Reshape the 'rois' (regions of interest) from wide to long format
+  pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+  # Group by the 'roi' variable for performing ANCOVA per region
+  group_nest(roi) %>%
+  # Perform ANCOVA (Analysis of Covariance) for each region of interest
+  mutate(anova_result = map(data, ~ Anova(aov(value ~ Studygroup + age +
+                                              I(age^2) + sex, 
+                                              data = .x), 
+                                          type = 3, test.statistic = 'F'))) %>%
+  # Tidy up the ANOVA results to make them easier to work with
+  mutate(tidy_anova = map(anova_result, ~ tidy(.))) %>%
+  # Unnest the tidied ANOVA results into a data frame for easy interpretation
+  unnest(tidy_anova) %>%
+  # For each term in the ANOVA results, adjust p-values for multiple comparisons using FDR correction
+  group_by(term) %>%
+  mutate(p_corr = p.adjust(p.value, method = 'fdr', n = length(p.value)),
+         f_value = if_else(term == 'Studygroup', statistic, NA_real_)) %>%
+  # Remove the intercept term from the results, as it's not relevant to our analysis
+  filter(!str_detect(term, '(Intercept)'))%>%
+  ungroup()%>%
+  # For each ROI, calculate the total sum of squares (SS) across all terms
+  group_by(roi)%>%
+  mutate(ss_total = sum(sumsq))%>%
+  ungroup()%>%
+  # Calculate eta-squared for effect size for the 'Studygroup' term
+  mutate(eta_square = sumsq/ss_total)%>%
+  filter(term == 'Studygroup') %>%
+  # Sort the results by the F-statistic in descending order (to see the most significant ROIs)
+  arrange(-statistic) %>%
+  dplyr::select(-c(data, anova_result, ss_total, sumsq))
+
+# Filter the results to identify regions of interest (ROIs) with significant 
+# effects (p-value < 0.05 after correction)
+significant_rois_3groups <- anova_3groups_result %>%
+  filter(p_corr < 0.05)
+
+# Display the results in an interactive datatable with options to export to CSV, PDF, etc.
+datatable(anova_3groups_result, extensions = 'Buttons', options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'pdf', 'print'),
+  pageLength = 25 # Change this to the number of rows you want to display
+  ))
+```
+
+### Post-Hoc Tests with the `emmeans` Package ROIs*
+In this analysis, ANCOVA was performed with **ROI** as the dependent variable and **study group**, **age**, **sex**, and **age-squared** as independent variables. The **study group** was the primary variable of interest. The `emmeans` package in R was used to compute **estimated marginal means (EMMs)**, or least-squares means, for the study groups while adjusting for age, sex, and age-squared. This allows for post-hoc pairwise comparisons between study groups, providing insight into the differences after accounting for these covariates.
+```{r, context="server", echo = FALSE, warning = FALSE, message = FALSE}
+# Post-hoc results across 3 groups
+result_posthoc <- tbss_final_fat %>%
+  # Select relevant columns (Studygroup, PSN, rois, age, sex) for the analysis
+  dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+  # Exclude columns related to 'Average'
+  dplyr::select(-contains('Average'))%>%
+  # Filter the dataset to include only the three study groups: ROP, HC, and CHR
+  filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+  # Reshape data from wide to long format, with each ROI as a separate row
+  pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+  # Group data by region of interest (ROI) for subsequent analysis
+  group_by(roi) %>%
+  do({
+    # Perform ANCOVA with 'Studygroup', 'age', 'sex', and 'age^2' as predictors
+    anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+    # Conduct type 3 ANCOVA to assess significance of the predictors
+    ANOVA_result <- Anova(anova_result, type = 3)
+    # Check if the p-value for the Studygroup effect is significant (p < 0.05)
+    if (ANOVA_result$`Pr(>F)`[2] < 0.05){
+      significant_test <- 'yes'
+    }else{
+      significant_test <- 'no'
+    }
+    if (nrow(.) & significant_test == 'yes') {
+      posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+      # Extract contrasts from the post-hoc analysis results
+      data.frame(posthoc_result$contrasts)
+    } else {
+      # If not significant, return an empty data frame
+      data.frame()
+    }
+  }) %>%
+  # Ungroup the data after the post-hoc analysis
+  ungroup()
+
+# Filter the ANOVA results to keep only significant regions (p_corr < 0.05)
+sig_rois_anova <- anova_3groups_result %>% 
+  filter(p_corr < 0.05)
+
+# Extract relevant columns for the post-hoc results, and filter by significant ROIs
+result_posthoc_pp <- result_posthoc %>%
+  dplyr::select(roi, contrast, t.ratio, p.value)%>%
+  filter(roi %in% sig_rois_anova$roi)
+
+# Create an interactive data table to display the post-hoc results with options to copy, export as CSV/PDF, or print
+datatable(result_posthoc_pp, extensions = 'Buttons', options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'pdf', 'print'),
+  pageLength = 25 # Change this to the number of rows you want to display
+  ))
+```
+
+### Code: Post-Hoc Tests with the `emmeans` Package ROIs*
+In this analysis, ANCOVA was performed with **ROI** as the dependent variable and **study group**, **age**, **sex**, and **age-squared** as independent variables. The **study group** was the primary variable of interest. The `emmeans` package in R was used to compute **estimated marginal means (EMMs)**, or least-squares means, for the study groups while adjusting for age, sex, and age-squared. This allows for post-hoc pairwise comparisons between study groups, providing insight into the differences after accounting for these covariates.
+```{r posthoc test for significant regions 3: 3 groups, echo = TRUE, message = FALSE, warning = FALSE, results = FALSE}
+# Post-hoc results across 3 groups
+result_posthoc <- tbss_final_fat %>%
+  # Select relevant columns (Studygroup, PSN, rois, age, sex) for the analysis
+  dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+  # Exclude columns related to 'Average'
+  dplyr::select(-contains('Average'))%>%
+  # Filter the dataset to include only the three study groups: ROP, HC, and CHR
+  filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+  # Reshape data from wide to long format, with each ROI as a separate row
+  pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+  # Group data by region of interest (ROI) for subsequent analysis
+  group_by(roi) %>%
+  do({
+    # Perform ANCOVA with 'Studygroup', 'age', 'sex', and 'age^2' as predictors
+    anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+    # Conduct type 3 ANCOVA to assess significance of the predictors
+    ANOVA_result <- Anova(anova_result, type = 3)
+    # Check if the p-value for the Studygroup effect is significant (p < 0.05)
+    if (ANOVA_result$`Pr(>F)`[2] < 0.05){
+      significant_test <- 'yes'
+    }else{
+      significant_test <- 'no'
+    }
+    if (nrow(.) & significant_test == 'yes') {
+      posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+      # Extract contrasts from the post-hoc analysis results
+      data.frame(posthoc_result$contrasts)
+    } else {
+      # If not significant, return an empty data frame
+      data.frame()
+    }
+  }) %>%
+  # Ungroup the data after the post-hoc analysis
+  ungroup()
+
+# Filter the ANOVA results to keep only significant regions (p_corr < 0.05)
+sig_rois_anova <- anova_3groups_result %>% 
+  filter(p_corr < 0.05)
+
+# Extract relevant columns for the post-hoc results, and filter by significant ROIs
+result_posthoc_pp <- result_posthoc %>%
+  dplyr::select(roi, contrast, t.ratio, p.value)%>%
+  filter(roi %in% sig_rois_anova$roi)
+
+# Create an interactive data table to display the post-hoc results with options to copy, export as CSV/PDF, or print
+datatable(result_posthoc_pp, extensions = 'Buttons', options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'pdf', 'print'),
+  pageLength = 25 # Change this to the number of rows you want to display
+  ))
+```
+
+## {-}
+
+# Canonical Correlation (CCA)
+The canonical correlation is performed in ROP and CHR individuals only.
+
+## Canonical Correlation {.tabset}
+
+### Data preparation 
+```{r create_rop_chr_studygroup_hccovs, echo = TRUE, warning = FALSE, message = FALSE}
+# Data preparation for canonical correlation analysis (CCA)
+
+# Filtering the dataset to include only the ROP and CHR study groups
+rop_chr_vars <- tbss_final_fat %>%
+  filter(Studygroup %in% c('ROP', 'CHR'))%>%
+  # Creating a numeric variable for 'sex' (0 for male, 1 for female)
+  mutate(sex_num = case_when(sex == 'male' ~ 0,
+                             sex == 'female' ~ 1))%>%
+  # Reversing the scales for variables where higher values indicate worse outcomes 
+  # (e.g., negative scores should be positive)
+  mutate(sips_p_t0_re = -sips_p_t0,
+         sips_n_t0_re = -sips_n_t0,
+         sips_g_t0_re = -sips_g_t0,
+         sips_d_t0_re = -sips_d_t0,
+         spia_sum_t0_re = -spia_sum_t0,
+         bdi_t0_re = -bdi_t0,
+         CPZE_cum_sum_re = -CPZE_cum_sum,
+         exposome_score_re = -exposome_score)%>%
+  mutate(uhr_1stdegree_re = case_when(uhr_1stdegree == 1 ~ 0,
+                                   uhr_1stdegree == 0 ~ 1))%>%
+  # Selecting relevant variables for the analysis
+  dplyr::select(PSN, Studygroup, 
+                GAF_DI_PastMonth_Screening, 
+                GAF_DI_LifeTime_Screening,
+                GAF_S_PastMonth_Screening, 
+                GAF_S_LifeTime_Screening,
+                sips_p_t0_re, 
+                sips_n_t0_re, 
+                sips_g_t0_re, 
+                sips_d_t0_re, 
+                spia_sum_t0_re,
+                bdi_t0_re,
+                CPZE_cum_sum_re, 
+                exposome_score_re,
+                uhr_1stdegree_re,
+                wais_mr, 
+                wais_v
+                )%>%
+  rowwise() %>%
+  # Convert all variables to character type for consistency, ensuring no issues with factors
+  mutate(across(everything(.), ~ as.character(.)))%>%
+  # Remove rows with all values being missing besides Studygroup and ID
+  filter(!sum(is.na(c_across())) == ncol(.) - 2)%>%
+  # Create a numeric variable for the study group (ROP = 0, CHR = 1)
+  mutate(studygroup_num = case_when(Studygroup %in% 'ROP' ~ 0,
+                                    Studygroup %in% 'CHR' ~ 1))%>%
+  ungroup()%>%
+  dplyr::select(-Studygroup)
+
+# Impute missing values: 
+# Numeric columns are imputed with the group-wise mean (except for 'PSN' and 'uhr_1stdegree_re')
+rop_chr_vars_imputed <- rop_chr_vars %>%
+  mutate(across(-c(PSN), ~ as.numeric(.)))%>%
+  group_by(studygroup_num)%>%
+  mutate(across(-(c(uhr_1stdegree_re, #sex_num,
+                    PSN)), 
+                ~ case_when(is.na(.) ~ mean(., na.rm = TRUE),
+                            TRUE ~ .)),
+         uhr_1stdegree_re = 
+           case_when(is.na(uhr_1stdegree_re) ~ 
+                       median(uhr_1stdegree_re, na.rm = TRUE),
+                     TRUE ~ uhr_1stdegree_re))%>%
+  ungroup()
+
+# Prepare final dataset for CCA analysis
+cca_vars_rop_chr <- rop_chr_vars_imputed %>%
+  rename(uhr_1stdegree_re = uhr_1stdegree_re)%>%
+  column_to_rownames('PSN')
+
+# Prepare DTI data (Regions of Interest - ROIs) for further analysis
+significant_rois_names_3groups <- significant_rois_3groups %>%
+  # Append '_dev' to ROI names for selecting the wrte values (deviation scores)
+  mutate(roi_names = paste0(roi, '_dev', sep = ''))
+
+# Filter and select relevant variables for DTI (based on significant ROIs)
+rop_chr_dti <- tbss_final_fat %>%
+  filter(Studygroup %in% c('ROP', 'CHR'))%>%
+  dplyr::select(PSN, Studygroup, significant_rois_names_3groups$roi_names)%>%
+  filter(PSN %in% rop_chr_vars$PSN)
+cca_dti_rop_chr <- rop_chr_dti %>% 
+  dplyr::select(-c(Studygroup, contains('Average')))%>%
+  column_to_rownames('PSN')
+
+# To write the dataframes out for cross-validation, we need to make 'PSN' a column again
+# This is necessary because PSN is currently a row name, which we need to convert to a regular column 
+cv_cca_dti_rop_chr <- cca_dti_rop_chr %>%
+  rownames_to_column('PSN')
+cv_cca_vars_rop_chr <- cca_vars_rop_chr %>%
+  rownames_to_column('PSN')
+
+# if you have adapted the script and want to look into the data you can write 
+# out the datafor cross validation again. Otherwise let this part commented. 
+#write.csv(cv_cca_vars_rop_chr, 'simulated_data/cca_vars_rop_chr_for_cv.csv', row.names = FALSE)
+#write.csv(cv_cca_dti_rop_chr, 'simulated_data/cca_dti_rop_chr_for_cv.csv', row.names = FALSE)
+```
+
+### Result+Code: Nr (%) missing all
+```{r echo = TRUE,fig.width=5,fig.height=4, warning = FALSE, message=FALSE}
+# here, we plot for each variable within the CCA analysis how many missing data
+# we expect to have.
+rop_chr_vars %>%
+  pivot_longer(cols = -c(PSN, studygroup_num), 
+               names_to = 'variables', values_to = 'values')%>%
+  mutate(missing = case_when(is.na(values) ~ 'missing',
+                             !is.na(values) ~ 'no_missing'))%>%
+  group_by(variables)%>%
+  mutate(variables_count = n())%>%
+  ungroup()%>%
+  group_by(variables, missing)%>%
+  mutate(missing_count = n())%>%
+  ungroup()%>%
+  distinct(variables, missing, missing_count, variables_count)%>%
+  pivot_wider(names_from = missing, values_from = missing_count)%>%
+  mutate(perc_missing = floor((missing/variables_count)*100))%>%
+  ggplot(aes(x = variables, y = perc_missing))+
+  geom_bar(stat = 'identity')+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90))+
+  geom_text(aes(label = paste0(missing, sep = '')), 
+            vjust = -2.5, colour = '#1B1919FF', size = 3)+
+  geom_text(aes(label = paste0('(',perc_missing, '%)', sep = '')),
+            vjust = -1, colour = '#1B1919B2', size = 3)+
+  ylab('Percent % of missing')+
+  ylim(c(0, 35))
+```
+
+### Result+Code: Nr (%) missing per group
+```{r echo = TRUE,fig.width=5,fig.height=5, warning = FALSE, message=FALSE}
+# here, we plot for each variable within the CCA analysis how many missing data
+# we expect to have.
+rop_chr_vars %>%
+  pivot_longer(cols = -c(PSN, studygroup_num), 
+               names_to = 'variables', values_to = 'values')%>%
+  mutate(missing = case_when(is.na(values) ~ 'missing',
+                             !is.na(values) ~ 'no_missing'))%>%
+  group_by(studygroup_num, variables)%>%
+  mutate(variables_count = n())%>%
+  ungroup()%>%
+  group_by(studygroup_num, variables, missing)%>%
+  mutate(missing_count = n())%>%
+  ungroup()%>%
+  distinct(studygroup_num, variables, missing, missing_count, variables_count)%>%
+  pivot_wider(names_from = missing, values_from = missing_count)%>%
+  mutate(perc_missing = floor((missing/variables_count)*100))%>%
+  ggplot(aes(x = variables, y = perc_missing))+
+  geom_bar(stat = 'identity')+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90))+
+  geom_text(aes(label = paste0(missing, sep = '')), 
+            vjust = -2.5, colour = '#1B1919FF', size = 3)+
+  geom_text(aes(label = paste0('(',perc_missing, '%)', sep = '')),
+            vjust = -1, colour = '#1B1919B2', size = 3)+
+  ylab('Percent % of missing')+
+  ylim(c(0, 55))+
+  facet_wrap(.~ studygroup_num, ncol = 1)
+```
+
+### Result+Code: Permutation analysis
+In a recent review, Wang et al. (2020) described a permutation procedure for Canonical Correlation Analysis (CCA) as "a random shuffling of the rows of the two variable sets" (Winkler et al., 2020). Winkler et al. (2020) argue that simple permutation tests for CCA lead to excessive error rates for all canonical correlations except the first, as such tests fail to account for the variance explained by previous canonical variables. They propose a solution that involves estimating canonical correlations stepwise, removing explained variance at each iteration while addressing different numbers of variables on each side. While Winkler et al. (2020) provided MATLAB code, we have translated it into R (see functions on GitHub).
+```{r permute_cca, echo = FALSE, warning = FALSE, messages = FALSE, results = TRUE}
+permuted_cca_rop_chr <- permcca_winkler(as.matrix(cca_vars_rop_chr), 
+                                        as.matrix(cca_dti_rop_chr), 
+                                        1000,
+                                        perms_rop_chr)
+pfwer_rc <- permuted_cca_rop_chr$pfwer
+canonical_variates_rc <- permuted_cca_rop_chr$cc
+cc_pfwer_rc <- cbind(canonical_variates_rc, pfwer_rc)
+print(cc_pfwer_rc)
+```
+
+### Result+Code: Bootstrap for feature importance
+After identifying significant canonical correlations based on family-wise error corrected p-values, we performed bootstrapping using 1000 subsamples to assess which variables contributed significantly to the overall correlation across variable pairs. This procedure was based on the method described by Winkler et al. (2020), which involves stepwise estimation of canonical correlations while removing previously explained variance at each iteration. We adapted the R package `Data4PCCAr` (https://github.com/HerveAbdi/data4PCCAR/blob/master/R/Boot4CCA.R) to implement this approach, ensuring it aligns with the specific steps outlined by Winkler et al. (2020).
+```{r bootstrap, echo = TRUE, warning = FALSE, messages = FALSE, results = TRUE}
+boot_rop_chr <- bootstrap_winkler(as.matrix(cca_vars_rop_chr),# %>% 
+                                          as.matrix(cca_dti_rop_chr),
+                                          nf2keep = ncol(cca_vars_rop_chr),#%>% 
+                                          nIter = 1000, 
+                                          critical.value = 2)
+boot_rop_chr$bootRatiosSignificant.i %>%
+  as.data.frame()%>%
+  filter(`Dimension 1` == TRUE|
+           `Dimension 2` == TRUE)%>%
+  dplyr::select(c(`Dimension 1`, `Dimension 2`))
+
+boot_rop_chr$bootRatiosSignificant.j %>%
+  as.data.frame()%>%
+  filter(`Dimension 1` == TRUE|
+           `Dimension 2` == TRUE)%>%
+  dplyr::select(c(`Dimension 1`, `Dimension 2`))
+```
+
+### Code: Extract the loadings and define color-code
+```{r, echo = TRUE, warning = FALSE, messages = FALSE, results = TRUE}
+# 1. Extracting bootstrapped loadings for each iteration and creating data frames for plotting.
+# These bootstrapped loadings will be used for boxplots, while the individual loadings 
+# derived from the canonical correlation analysis (CCA) function will be used to base the color coding.
+
+# Process bootstrapped loadings for Dimension 1 and Dimension 2 (first for variables and then for DTI):
+# - Extract weights for Dimension 1 (bootstrapped) and reshape to long format.
+# - Extract weights for Dimension 2 (bootstrapped) and reshape to long format.
+
+# Step 1a: Extract bootstrapped weights for Dimension 1 (Variables)
+loadings_vars_dim1_boot <- boot_rop_chr$bootWeights.i %>%
+  as.data.frame()%>%
+  dplyr::select(starts_with(c('Dimension 1.')))%>%
+  rownames_to_column('features')%>%
+  pivot_longer(-features, names_to = 'iteration', values_to = 'loadings_boot')%>%
+  dplyr::select(-iteration)%>%
+  mutate(dimension = 'V1')
+
+# Step 1b: Extract bootstrapped weights for Dimension 2 (Variables)
+loadings_vars_dim2_boot <- boot_rop_chr$bootWeights.i %>%
+  as.data.frame()%>%
+  dplyr::select(starts_with(c('Dimension 2.')))%>%
+  rownames_to_column('features')%>%
+  pivot_longer(-features, names_to = 'iteration', values_to = 'loadings_boot')%>%
+  dplyr::select(-iteration)%>%
+  mutate(dimension = 'V2')
+
+# Step 1c: Combine the data for both dimensions (Dimension 1 and Dimension 2) into a single data frame.
+loadings_vars_boot <- loadings_vars_dim1_boot %>%
+  rbind(., loadings_vars_dim2_boot)
+
+# Step 2a: Extract bootstrapped weights for Dimension 1 (DTI)
+loadings_dti_dim1_boot <- boot_rop_chr$bootWeights.j %>%
+  as.data.frame()%>%
+  dplyr::select(starts_with(c('Dimension 1.')))%>%
+  rownames_to_column('features')%>%
+  pivot_longer(-features, names_to = 'iteration', values_to = 'loadings_boot')%>%
+  dplyr::select(-iteration)%>%
+  mutate(dimension = 'V1')
+
+# Step 2b: Extract bootstrapped weights for Dimension 2 (DTI)
+loadings_dti_dim2_boot <- boot_rop_chr$bootWeights.j %>%
+  as.data.frame()%>%
+  dplyr::select(starts_with(c('Dimension 2.')))%>%
+  rownames_to_column('features')%>%
+  pivot_longer(-features, names_to = 'iteration', values_to = 'loadings_boot')%>%
+  dplyr::select(-iteration)%>%
+  mutate(dimension = 'V2')
+
+# Step 2c: Combine the data for both dimensions (Dimension 1 and Dimension 2) into a single data frame.
+loadings_dti_boot <- loadings_dti_dim1_boot %>%
+  rbind(., loadings_dti_dim2_boot)
+
+# Step 3: Calculate the loadings using the CCA package.
+x <- CCA::cc(cca_vars_rop_chr,cca_dti_rop_chr)
+# Step 3a: Check if the CCA package results match the results from the Winkler 
+# function to ensure consistency.
+# Compare the canonical correlations to ensure that both methods give the same results.
+if (sum(round(x$cor, digits = 8) - round(canonical_variates_rc, digits = 8)) != 0){
+  print('CCA package did not provide the same canonical variates like Winkler-
+        function! STOP')
+}else{print('CCA package and Winkler-function provide same results')
+}
+
+# Step 3b: Extract the loadings from the CCA results for the variables and the DTI.
+# These loadings will be used for creating the figures and color-coding in the final plots.
+loadings_CCA_vars_rop_chr<-cor(cca_vars_rop_chr,x$scores$xscores,use="complete.obs") 
+loadings_CCA_dti_rop_chr <-cor(cca_dti_rop_chr,x$scores$yscores,use="complete.obs")
+
+# Step 4: Create the two data frames (vars_sig and dti_sig) for color-bar plotting.
+# These will be used to create the color bars based on the bootstrapped results.
+vars_sig <- boot_rop_chr$bootRatiosSignificant.i %>%
+  as.data.frame()%>%
+  dplyr::select(c(`Dimension 1`, `Dimension 2`))%>%
+  rownames_to_column('features')%>%
+  mutate(V1 = case_when(`Dimension 1` == TRUE ~ '1',
+                                     `Dimension 1` == FALSE ~ '0'),
+         V2 = case_when(`Dimension 2` == TRUE ~ '1',
+                                     `Dimension 2` == FALSE ~ '0'))%>%
+  dplyr::select(features, starts_with('V'))%>%
+  pivot_longer(cols = starts_with('V'), names_to = 'dimension', 
+                                  values_to = 'significance')
+
+loadings_overall_vars <- loadings_CCA_vars_rop_chr%>%
+  as.data.frame()%>%
+  rownames_to_column('features')%>%
+  dplyr::select(features, V1, V2)%>%
+  pivot_longer(cols = -features, names_to = 'dimension', values_to = 'overall_loadings')%>%
+  mutate(loadings_color = round(overall_loadings, digits = 3))
+
+loadings_vars_plot <- loadings_vars_boot %>%
+  as.data.frame()%>%
+  left_join(., vars_sig, by = c('dimension', 'features'))%>%
+  left_join(., loadings_overall_vars, by = c('dimension', 'features'))%>%
+  mutate(domain = 'clinical')%>%
+  mutate(loadings_color = as.character(loadings_color))%>%
+  mutate(colorbar = case_when(significance == '0' ~ '0',
+                              TRUE ~ loadings_color))
+
+dti_sig <- boot_rop_chr$bootRatiosSignificant.j %>%
+  as.data.frame()%>%
+  dplyr::select(c(`Dimension 1`, `Dimension 2`))%>%
+  rownames_to_column('features')%>%
+  mutate(V1 = case_when(`Dimension 1` == TRUE ~ '1',
+                                     `Dimension 1` == FALSE ~ '0'),
+         V2 = case_when(`Dimension 2` == TRUE ~ '1',
+                                     `Dimension 2` == FALSE ~ '0'))%>%
+  dplyr::select(features, starts_with('V'))%>%
+  pivot_longer(cols = starts_with('V'), names_to = 'dimension',
+               values_to = 'significance')
+
+loadings_overall_dti <- loadings_CCA_dti_rop_chr%>%
+  as.data.frame()%>%
+  rownames_to_column('features')%>%
+  dplyr::select(features, V1, V2)%>%
+  pivot_longer(cols = -features, 
+               names_to = 'dimension', values_to = 'overall_loadings')%>%
+  mutate(loadings_color = round(overall_loadings, digits = 3))
+
+loadings_dti_plot <- loadings_dti_boot %>%
+  as.data.frame()%>%
+  left_join(., dti_sig, by = c('dimension', 'features'))%>%
+  left_join(., loadings_overall_dti, by = c('dimension', 'features'))%>%
+  mutate(loadings_color = as.character(round(overall_loadings, digits = 3)))%>%
+  mutate(colorbar = case_when(significance == '0' ~ '0',
+                              TRUE ~ loadings_color))%>%
+  mutate(domain = 'dwi')
+
+loadings_all <- loadings_vars_plot %>%
+  rbind(., loadings_dti_plot %>% dplyr::select(names(loadings_vars_plot)))
+
+overall_colors <- loadings_dti_plot %>%
+  rbind(., loadings_vars_plot)%>%
+  filter(significance %in% 1)%>%
+  distinct(colorbar, .keep_all = TRUE)%>%
+  arrange(colorbar)
+
+# Note: The color coding here corresponds to the actual data (original dataset) 
+# and is used for visualization in the plot. 
+# It represents the significance or the weights/loadings for the actual dataset 
+# (i.e., how the features correlate with the canonical variables). 
+# This color coding will **not** provide the correct values for the simulated data 
+# because the simulated data does not contain the same values or relationships as the original data.
+# The color bar is meant to visually represent the relationship of actual data with canonical variates.
+color_values <- 
+  c('-0.734' = "#6B3D3D", '-0.651'="#734343",  '0.618' = "#7C4A4A", 
+    '-0.599' = "#855151", '-0.59' ="#8E5858",  '-0.488'= "#965E5E", 
+    '-0.48'  = "#9F6565", '0.48'  ="#9F6565",  '-0.476'= "#A86C6C",  
+    '-0.472' = "#B17373", '-0.442'="#BA7A7A",  '0.415' = "#C28080",  
+    '-0.399' = "#CB8787", '0.381'= "#D48E8E",  '0.366' = "#DD9595",
+    '0.365'  = "#E69C9C", '0.363'= "#E7A1A1", '-0.348' = "#E8A7A7",
+    '-0.338' = "#EAACAC", '-0.321'="#EBB2B2", '-0.311' = "#ECB7B7",
+    '-0.31'  = "#EEBDBD", '-0.303'="#EFC2C2", '0.295'  = "#F0C8C8",
+    '-0.29'  = "#F2CDCD", '0.283' ="#F3D3D3", '-0.282' = "#F4D8D8",
+    '-0.28'  = "#F6DEDE", '-0.273'='#F7E3E3', '0.261'  = "#F7E3E3", 
+    '0' = 'lightgrey')
+```
+
+### Figure: Plot loadings (CCA) 
+Note: The color coding here corresponds to the actual data (original dataset) 
+and is used for visualization in the plot. 
+It represents the significance or the weights/loadings for the actual dataset 
+(i.e., how the features correlate with the canonical variables). 
+This color coding will **not** provide the correct values for the simulated data 
+because the simulated data does not contain the same values or relationships as the original data.
+The color bar is meant to visually represent the relationship of actual data with canonical variates.
+```{r echo = FALSE,fig.width=11,fig.height=11, warning = FALSE, message=FALSE}
+### Plotting the loading of canonical variables per dimension:
+dimension_label <- c('V1' = 'First mode',
+                     'V2' = 'Second mode')
+domain_label    <- c('clinical' = 'behavioral variables',
+                     'dwi' = 'white-matter microstructure')
+plot_loadings_cca <- loadings_all %>%
+  mutate(colorbar = case_when(
+    significance == '0' ~ '0',
+    TRUE ~ as.character(round(as.numeric(loadings_color), 3))
+  ))%>%
+  ggplot(aes(x = loadings_boot, y = features, color = colorbar))+
+  geom_boxplot(outlier.shape = NA, width = 0.5, lwd = 1)+
+  theme_bw(base_size = 15)+
+  scale_y_discrete(labels = c('wais_v' = 'WAIS: vocabulary',
+                              'wais_mr'= 'WAIS: matrices',
+                              'uhr_1stdegree_re'= 'familial risk: >= 1st degree',
+                              'spia_sum_t0_re' = 'SPI-A symptoms',
+                              'sips_p_t0_re' = 'SIPS: positive',
+                              'sips_n_t0_re' = 'SIPS: negative',
+                              'sips_g_t0_re' = 'SIPS: general',
+                              'sips_d_t0_re' = 'SIPS: disorganized',
+                              'GAF_S_PastMonth_Screening' = 'GAF-Symptoms: Past Month',
+                              'GAF_DI_PastMonth_Screening' = 'GAF-DI: Past Month',
+                              'GAF_S_LifeTime_Screening' = 'GAF-Symptoms: Lifetime',
+                              'GAF_DI_LifeTime_Screening' = 'GAF-DI: Lifetime',
+                              'exposome_score_re' = 'Aggregated environmental risk',
+                              'CPZE_cum_sum_re' = 'CPZE: cumulative sum',
+                              'bdi_t0_re' = 'BDI-II',
+                              'SS_dev' = 'SS',
+                              'SLF_dev' = 'SLF',
+                              'SCP_dev' = 'SCP',
+                              'EC_dev' = 'EC',
+                              'FX_ST_dev' = 'FXST',
+                              'CGC_dev' = 'CGC',
+                              'FX_dev' = 'FX',
+                              'GCC_dev' = 'GCC',
+                              'PTR_dev' = 'PTR',
+                              'ALIC_dev' = 'ALIC',
+                              'CGH_dev' = 'CGH',
+                              'CP_dev' = 'CP',
+                              'RLIC_dev' = 'RLIC',
+                              'ACR_dev' = 'ACR',
+                              'PLIC_dev' = 'PLIC',
+                              'PCR_dev' = 'PCR',
+                              'SCC_dev' = 'SCC',
+                              'ML_dev' = 'ML',
+                              'studygroup_num' = 'Studygroup'
+  ))+
+  xlim(c(-0.75, 0.65))+
+  facet_grid(domain~dimension, scales = 'free_y',
+             labeller = labeller(domain = domain_label,
+                                 dimension = dimension_label))+
+  theme(axis.text = element_text(size = 17),
+        legend.position = 'none',
+        panel.spacing.x = unit(1, "lines"),  # Horizontal spacing between panels
+        panel.spacing.y = unit(1, "lines"),
+        axis.title.y = element_blank(),
+        strip.text = element_text(face = "bold"),
+        #strip.text = element_blank(),
+        strip.placement = "outside",
+        strip.background = element_rect(color = "white", fill = "white"),
+        strip.text.x = element_text(vjust = 2, size = 20),
+        strip.text.y = element_text(size = 20))+
+  scale_color_manual(values = color_values)+
+  xlab('canonical loadings')+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey")  # Vertical line at x = 0
+
+plot_loadings_cca
+```
+
+### Code: Plot loadings (CCA) 
+```{r echo = TRUE,fig.width=11,fig.height=11, warning = FALSE, message=FALSE}
+### Plotting the loading of canonical variables per dimension:
+dimension_label <- c('V1' = 'First mode',
+                     'V2' = 'Second mode')
+domain_label    <- c('clinical' = 'behavioral variables',
+                     'dwi' = 'white-matter microstructure')
+plot_loadings_cca <- loadings_all %>%
+  mutate(colorbar = case_when(
+    significance == '0' ~ '0',
+    TRUE ~ as.character(round(as.numeric(loadings_color), 3))
+  ))%>%
+  ggplot(aes(x = loadings_boot, y = features, color = colorbar))+
+  geom_boxplot(outlier.shape = NA, width = 0.5, lwd = 1)+
+  theme_bw(base_size = 15)+
+  scale_y_discrete(labels = c('wais_v' = 'WAIS: vocabulary',
+                              'wais_mr'= 'WAIS: matrices',
+                              'uhr_1stdegree_re'= 'familial risk: >= 1st degree',
+                              'spia_sum_t0_re' = 'SPI-A symptoms',
+                              'sips_p_t0_re' = 'SIPS: positive',
+                              'sips_n_t0_re' = 'SIPS: negative',
+                              'sips_g_t0_re' = 'SIPS: general',
+                              'sips_d_t0_re' = 'SIPS: disorganized',
+                              'GAF_S_PastMonth_Screening' = 'GAF-Symptoms: Past Month',
+                              'GAF_DI_PastMonth_Screening' = 'GAF-DI: Past Month',
+                              'GAF_S_LifeTime_Screening' = 'GAF-Symptoms: Lifetime',
+                              'GAF_DI_LifeTime_Screening' = 'GAF-DI: Lifetime',
+                              'exposome_score_re' = 'Aggregated environmental risk',
+                              'CPZE_cum_sum_re' = 'CPZE: cumulative sum',
+                              'bdi_t0_re' = 'BDI-II',
+                              'SS_dev' = 'SS',
+                              'SLF_dev' = 'SLF',
+                              'SCP_dev' = 'SCP',
+                              'EC_dev' = 'EC',
+                              'FX_ST_dev' = 'FXST',
+                              'CGC_dev' = 'CGC',
+                              'FX_dev' = 'FX',
+                              'GCC_dev' = 'GCC',
+                              'PTR_dev' = 'PTR',
+                              'ALIC_dev' = 'ALIC',
+                              'CGH_dev' = 'CGH',
+                              'CP_dev' = 'CP',
+                              'RLIC_dev' = 'RLIC',
+                              'ACR_dev' = 'ACR',
+                              'PLIC_dev' = 'PLIC',
+                              'PCR_dev' = 'PCR',
+                              'SCC_dev' = 'SCC',
+                              'ML_dev' = 'ML',
+                              'studygroup_num' = 'Studygroup'
+  ))+
+  xlim(c(-0.75, 0.65))+
+  facet_grid(domain~dimension, scales = 'free_y',
+             labeller = labeller(domain = domain_label,
+                                 dimension = dimension_label))+
+  theme(axis.text = element_text(size = 17),
+        legend.position = 'none',
+        panel.spacing.x = unit(1, "lines"),  # Horizontal spacing between panels
+        panel.spacing.y = unit(1, "lines"),
+        axis.title.y = element_blank(),
+        strip.text = element_text(face = "bold"),
+        #strip.text = element_blank(),
+        strip.placement = "outside",
+        strip.background = element_rect(color = "white", fill = "white"),
+        strip.text.x = element_text(vjust = 2, size = 20),
+        strip.text.y = element_text(size = 20))+
+  scale_color_manual(values = color_values)+
+  xlab('canonical loadings')+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey")  # Vertical line at x = 0
+
+plot_loadings_cca
+```
+
+### Extract canonical loadings:
+```{r extract_canonical_variates, echo = TRUE, warning = FALSE, messages = FALSE, results = TRUE}
+### Extract canonical loadings:  
+# The following code extracts the canonical loadings for the clinical and DTI (diffusion tensor imaging) variables 
+# from bootstrapped projections and combines them into one data frame.
+
+# Extract clinical projections and rename columns with a 'clin_' prefix for easy identification later.
+clin_projections <- boot_rop_chr$clin_proj %>%
+  as.data.frame(.)%>%
+  rename_with(~ paste0("clin_", .), everything())
+
+# Extract DTI projections and rename columns with a 'dwi_' prefix for easy identification later.
+dwi_projections <- boot_rop_chr$dwi_proj %>%
+  as.data.frame(.)%>%
+  rename_with(~ paste0("dwi_", .), everything())
+
+# Combine clinical and DTI projections into a single data frame.
+projections <- clin_projections %>%
+  cbind(., dwi_projections)
+
+# Combine projections with canonical correlation analysis (CCA) variables.
+# First, convert row names to a column for identification ('PSN').
+cca_projections <- cca_vars_rop_chr %>%
+  rownames_to_column('PSN')%>%
+  left_join(., cca_dti_rop_chr %>% rownames_to_column('PSN'), by ='PSN')%>%
+  cbind(., projections)
+```
+
+### Figure: canonical loadings
+```{r figure_canonical_loadings, echo = FALSE, fig.width=6,fig.height=8, warning = FALSE, messages = FALSE, results = TRUE}
+# Function to plot the correlation individually and together
+# Plots the first component of the canonical loadings
+plot_loadings_individually <- function(projection_df, x_var, y_var,
+                                       x_label, y_label,
+                                       saving_label){
+  # Define custom facet labels for the study groups
+  facet_labels_studygroup <- c('0' = 'recent-onset psychosis',
+                               '1' = 'clinical high-risk')
+  
+  # Plot the individual group-wise scatter plots
+  # Facet the plot by studygroup_num to show separate plots for different groups
+  plot_group <- projection_df %>%
+    ggplot(aes(x = !!sym(x_var), y = !!sym(y_var)))+
+    geom_smooth(method = 'lm', color = 'black')+
+    geom_point(alpha = 0.3)+
+    facet_wrap(.~studygroup_num, 
+               labeller = labeller(studygroup_num = facet_labels_studygroup),
+               ncol = 1)+
+    theme_bw(base_size = 15)+
+    xlab(x_label)+
+    ylab(y_label)
+  
+  # Plot the combined plot for both groups in a single graph
+  # Display scatter plot with group coloring and regression line
+  plot_all <- projection_df %>%
+    ggplot(aes(x = !!sym(x_var), y = !!sym(y_var)))+
+    geom_smooth(method = 'lm', color = 'black')+
+    geom_point(alpha = 0.6, aes(color = as.factor(studygroup_num)))+
+    theme_bw(base_size = 15)+
+    xlab(x_label)+
+    ylab(y_label)+
+    scale_color_manual(values = c('0' = '#e69c9c',
+                                  '1' = '#8ba6b1'),
+                       labels = c('0' = 'recent-onset psychosis',
+                                  '1' = 'clinical high-risk'))+
+    theme(
+      legend.title = element_blank(),
+    legend.position = "bottom", # Move legend below
+    legend.direction = "horizontal", # Horizontal legend layout
+    legend.text = element_text(size = 11), # Adjust text size
+    legend.key.height = unit(0.1, "cm"),   # Reduce legend key height
+    legend.spacing.x = unit(0.01, "cm")     # Reduce spacing between legend items
+
+  ) +
+  guides(
+    color = guide_legend(nrow = 2,
+                         byrow = TRUE) # Arrange legend in two rows
+  )
+
+  # Combine the two plots (group-wise and combined) side-by-side
+  plot_df <- plot_grid(plot_all, plot_group, ncol = 2)  # ncol = 2 means side-by-side
+  plot_df
+}
+
+# Call the function to plot the first component's loadings
+plot_loadings_individually(cca_projections, x_var = 'clin_V1', y_var = 'dwi_V1', 
+                           x_label = 'loadings mode 1: clinical',
+                           y_label = 'loadings mode 1:\nwhite-matter microstructure',
+                           saving_label = 'plot_loading1')
+```
+
+### Code: plot canonical loadings
+Here, as an example we plot the loadings of the first component clinical variables vs. DWI. 
+The function can be used for each clinical variables vs. DWI-loading as we present in the Supplementary material.
+```{r code_canonical_loadings, echo = TRUE, fig.width=6,fig.height=8, warning = FALSE, messages = FALSE, results = TRUE}
+# Function to plot the correlation individually and together
+# Plots the first component of the canonical loadings
+plot_loadings_individually <- function(projection_df, x_var, y_var,
+                                       x_label, y_label,
+                                       saving_label){
+  # Define custom facet labels for the study groups
+  facet_labels_studygroup <- c('0' = 'recent-onset psychosis',
+                               '1' = 'clinical high-risk')
+  
+  # Plot the individual group-wise scatter plots
+  # Facet the plot by studygroup_num to show separate plots for different groups
+  plot_group <- projection_df %>%
+    ggplot(aes(x = !!sym(x_var), y = !!sym(y_var)))+
+    geom_smooth(method = 'lm', color = 'black')+
+    geom_point(alpha = 0.3)+
+    facet_wrap(.~studygroup_num, 
+               labeller = labeller(studygroup_num = facet_labels_studygroup),
+               ncol = 1)+
+    theme_bw(base_size = 15)+
+    xlab(x_label)+
+    ylab(y_label)
+  
+  # Plot the combined plot for both groups in a single graph
+  # Display scatter plot with group coloring and regression line
+  plot_all <- projection_df %>%
+    ggplot(aes(x = !!sym(x_var), y = !!sym(y_var)))+
+    geom_smooth(method = 'lm', color = 'black')+
+    geom_point(alpha = 0.6, aes(color = as.factor(studygroup_num)))+
+    theme_bw(base_size = 15)+
+    xlab(x_label)+
+    ylab(y_label)+
+    scale_color_manual(values = c('0' = '#e69c9c',
+                                  '1' = '#8ba6b1'),
+                       labels = c('0' = 'recent-onset psychosis',
+                                  '1' = 'clinical high-risk'))+
+    theme(
+      legend.title = element_blank(),
+    legend.position = "bottom", # Move legend below
+    legend.direction = "horizontal", # Horizontal legend layout
+    legend.text = element_text(size = 11), # Adjust text size
+    legend.key.height = unit(0.1, "cm"),   # Reduce legend key height
+    legend.spacing.x = unit(0.01, "cm")     # Reduce spacing between legend items
+
+  ) +
+  guides(
+    color = guide_legend(nrow = 2,
+                         byrow = TRUE) # Arrange legend in two rows
+  )
+
+  # Combine the two plots (group-wise and combined) side-by-side
+  plot_df <- plot_grid(plot_all, plot_group, ncol = 2)  # ncol = 2 means side-by-side
+  plot_df
+}
+
+# Call the function to plot the first component's loadings
+plot_loadings_individually(cca_projections, x_var = 'clin_V1', y_var = 'dwi_V1', 
+                           x_label = 'loadings mode 1: clinical',
+                           y_label = 'loadings mode 1:\nwhite-matter microstructure',
+                           saving_label = 'plot_loading1')
+```
+
+## {-}
+
+# Cohen's d of group effects
+here, we show the group effects calculated using hte emmeans package adjusted for age and sex.
+
+## Adjusted Cohen's d {.tabset}
+
+### Figure: group comparison adjusted Cohen's d
+```{r figure_2_cohensd, echo = FALSE,fig.width=8,fig.height=11, warning = FALSE, message=FALSE}
+# Here, we create the plot for FAt values per ROI represented as Cohen's d
+
+# First, process p-values for the post hoc tests by creating 'group1' and 'group2' based on the contrast 
+# and selecting relevant columns (roi, group1, group2, and p.value)
+p_values <- result_posthoc_pp %>%
+  mutate(group1 = case_when(contrast %in% 'CHR - ROP' ~ 'CHR',
+                            contrast %in% 'CHR - HC' ~ 'CHR',
+                            contrast %in% 'HC - ROP' ~ 'HC'),
+         group2 = case_when(contrast %in% 'CHR - ROP' ~ 'ROP',
+                            contrast %in% 'CHR - HC' ~ 'HC',
+                            contrast %in% 'HC - ROP' ~ 'ROP'))%>%
+  dplyr::select(roi, group1, group2, p.value)
+
+# For effect size calculation, perform a similar process, but without the significance filtering step.
+# Here, we calculate Cohen's d for all ROIs regardless of statistical significance
+effect_size <- tbss_final_fat %>%
+  dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+  dplyr::select(-contains('Average'))%>%
+  filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+  pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+  group_by(roi) %>%
+  do({
+    anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+    # look further into the different types of ANCOVA
+    ANOVA_result <- Anova(anova_result, type = 3)
+    if (ANOVA_result$`Pr(>F)`[2] < 0.05){
+      significant_test <- 'yes'
+    }else{
+      significant_test <- 'no'
+    }
+    if (nrow(.) & significant_test == 'yes') {
+      posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+      effect_size <- eff_size(posthoc_result, sigma = sigma(anova_result), 
+                              edf = df.residual(anova_result))
+      data.frame(effect_size)
+    } else {
+      data.frame()
+    }
+  }) %>%
+  ungroup()%>%
+  mutate(group1 = case_when(contrast %in% '(CHR - ROP)' ~ 'CHR',
+                            contrast %in% '(CHR - HC)' ~ 'CHR',
+                            contrast %in% '(HC - ROP)' ~ 'HC'),
+         group2 = case_when(contrast %in% '(CHR - ROP)' ~ 'ROP',
+                            contrast %in% '(CHR - HC)' ~ 'HC',
+                            contrast %in% '(HC - ROP)' ~ 'ROP'))%>%
+  dplyr::select(roi, group1, group2, effect.size)%>%
+  left_join(., p_values, by = c('group1', 'group2', 'roi'))
+
+# Define which effect sizes refer to significant rois.
+effect_size_corrected_all <- tbss_final_fat %>%
+  dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+  dplyr::select(-contains('Average'))%>%
+  filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+  pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+  group_by(roi) %>%
+  do({
+    anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+    # look further into the different types of ANCOVA
+    ANOVA_result <- Anova(anova_result, type = 3)
+    posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+    effect_size <- eff_size(posthoc_result, sigma = sigma(anova_result), 
+                              edf = df.residual(anova_result))
+      data.frame(effect_size)
+      })%>%
+  ungroup()%>%
+  mutate(group1 = case_when(contrast %in% '(CHR - ROP)' ~ 'CHR',
+                            contrast %in% '(CHR - HC)' ~ 'CHR',
+                            contrast %in% '(HC - ROP)' ~ 'HC'),
+         group2 = case_when(contrast %in% '(CHR - ROP)' ~ 'ROP',
+                            contrast %in% '(CHR - HC)' ~ 'HC',
+                            contrast %in% '(HC - ROP)' ~ 'ROP'))%>%
+  dplyr::select(roi, group1, group2, effect.size)%>%
+  left_join(., p_values, by = c('group1', 'group2', 'roi'))
+
+# Function to perform jackknife analysis and calculate 95% CI for Cohen's d
+jackknife_analysis <- function(df, contrast_predict, p_value_df){
+  
+  # Get unique sites
+  unique_sites <- unique(df$Scan_site)
+  
+  # Initialize a list to store results
+  results <- list()
+  
+  # Loop over each site to perform jackknife analysis
+  for (site in unique_sites) {
+    
+    # Filter out the current site
+    df_filtered <- df %>% filter(Scan_site != site)
+    
+    # Calculate Cohen's d
+    #cohens_d_result <- calculate_cohensd(df_filtered, groups, p_value_df)
+    effect_size_result <- df_filtered %>%
+      dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+      dplyr::select(-contains('Average'))%>%
+      filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+      pivot_longer(cols = rois, 
+               names_to = 'roi', values_to = 'value') %>%
+      group_by(roi) %>%
+      do({
+        anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+        # look further into the different types of ANCOVA
+        ANOVA_result <- Anova(anova_result, type = 3)
+        if (ANOVA_result$`Pr(>F)`[2] < 0.05){
+          significant_test <- 'yes'
+          }else{
+            significant_test <- 'no'
+          }
+        posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+        effect_size <- eff_size(posthoc_result, sigma = sigma(anova_result), edf = df.residual(anova_result))
+        data.frame(effect_size)
+        }) %>%
+      ungroup()%>%
+      filter(contrast %in% contrast_predict)%>%
+      mutate(group1 = case_when(contrast %in% '(CHR - ROP)' ~ 'CHR',
+                                contrast %in% '(CHR - HC)' ~ 'CHR',
+                                contrast %in% '(HC - ROP)' ~ 'HC'),
+             group2 = case_when(contrast %in% '(CHR - ROP)' ~ 'ROP',
+                                contrast %in% '(CHR - HC)' ~ 'HC',
+                                contrast %in% '(HC - ROP)' ~ 'ROP'))%>%
+      dplyr::select(roi, group1, group2, effect.size)%>%
+      left_join(., p_value_df, by = c('group1', 'group2', 'roi'))
+    # Store the result in the list, using the site as the key
+    results[[site]] <- effect_size_result
+  }
+  
+  # Initialize a list to store CIs
+  ci_list <- list()
+  
+  # Loop over each ROI (assuming ROI names are consistent across sites)
+  rois_loop <- unique(results[[1]]$roi)
+  for (roi_name in rois_loop) {
+    
+    # Extract Cohen's d values for the current ROI across all sites
+    cohens_d_values <- sapply(results, function(res) {
+      res %>% filter(roi == roi_name) %>% pull(effect.size)
+    })
+    
+    # Calculate mean Cohen's d
+    mean_d <- mean(cohens_d_values)
+    
+    # Calculate standard error
+    se_d <- sd(cohens_d_values) / sqrt(length(cohens_d_values))
+    
+    # Calculate 95% confidence interval
+    ci_lower <- mean_d - 1.96 * se_d
+    ci_upper <- mean_d + 1.96 * se_d
+    
+    # Store the results in a data frame
+    ci_list[[roi_name]] <- data.frame(
+      roi = roi_name,
+      mean_cohens_d = mean_d,
+      ci_lower = ci_lower,
+      ci_upper = ci_upper
+    )
+  }
+  
+  # Combine all ROIs into one data frame
+  ci_df <- do.call(rbind, ci_list)
+  
+  return(ci_df)
+}
+
+# Apply the jackknife analysis with CI calculation for each comparison
+ci_rop_hc <- jackknife_analysis(tbss_final_fat, '(HC - ROP)', p_values)%>%
+  mutate(contrast = 'HC_ROP')
+ci_rop_chr <- jackknife_analysis(tbss_final_fat, c('(CHR - ROP)'), p_values)%>%
+  mutate(contrast = 'CHR_ROP')
+ci_hc_chr <- jackknife_analysis(tbss_final_fat, c('(CHR - HC)'), p_values)%>%
+  mutate(contrast = 'CHR_HC')
+
+ci_groups <- ci_rop_hc %>%
+  rbind(., ci_rop_chr)%>%
+  rbind(., ci_hc_chr)
+
+groups_effsize <- effect_size_corrected_all %>%
+  filter(!is.na(p.value))%>%
+  dplyr::select(group1, group2, effect.size, roi, p.value)%>%
+  unite('contrast', c(group1, group2), sep = '_')%>%
+  mutate(significance = case_when(p.value < 0.05 ~ 'sig',
+                                  p.value == 0.05|p.value > 0.05 ~ 'non'))%>%
+  mutate(effect.size = case_when(contrast %in% 'CHR_HC' ~ effect.size*-1,
+                             TRUE ~ effect.size))%>%
+  unite('groups_sig', c(contrast, significance), sep = '_', remove = FALSE)%>%
+  left_join(., ci_groups, by = c('contrast', 'roi'))%>%
+  mutate(ci_lower = case_when(contrast %in% 'CHR_HC' ~ ci_lower*-1,
+                              TRUE ~ ci_lower),
+         ci_upper = case_when(contrast %in% 'CHR_HC' ~ ci_upper*-1,
+                              TRUE ~ ci_upper))
+
+labels_rois <- c(
+  'ACR' = 'anterior corona\nradiata (ACR)',
+  'ALIC' = 'anterior limb of\ninternal capsule (ALIC)',
+  'BCC' = 'body of\ncorpus callosum (BCC)',
+  'CGC' = 'cingulum (CGC)',
+  'CGH' = 'cingulum\n(hippocampal portion) (CGH)',
+  'CP' = 'cerebellar peduncle (CP)',
+  'CST' = 'corticospinal\ntract (CST)',
+  'EC' = 'external capsule (EC)',
+  'FX' = 'fornix (FX)',
+  'FX_ST' = 'fornix stria\nterminalis (FXST)',
+  'GCC' = 'genu of\ncorpus callosum (GCC)',
+  'ICP' = 'internal capsule (ICP)',
+  'IFO' = 'inferior fronto\noccipital fasciculus (IFO)',
+  'ML' = 'medial lemniscus (ML)',
+  'PCR' = 'posterior\ncorona radiata (PCR)',
+  'PLIC' = 'posterior limb of\ninternal capsule (PLIC)',
+  'PTR' = 'posterior\nthalamic radiation (PTR)',
+  'RLIC' = 'retrolenticular\npart of internal capsule (RLIC)',
+  'SCC' = 'splenium of\ncorpus callosum (SCC)',
+  'SCP' = 'superior\ncerebellar peduncle (SCP)',
+  'SCR' = 'superior\ncorona radiata (SCR)',
+  'SFO' = 'superior fronto-\noccipital fasciculus (SFO)',
+  'SLF' = 'superior\nlongitudinal fasciculus (SLF)',
+  'SS' = 'sagittal stratum (SS)',
+  'UNC' = 'uncinate (UNC)'
+)
+plot_brain_effsize <- groups_effsize %>%
+  # March 6h 25: delete all CHR_ROP contrasts
+  filter(!contrast %in% 'CHR_ROP')%>%
+  mutate(roi = 
+           factor(roi, levels = 
+                    c('FX_ST', 'ALIC', 'PLIC', 'CP', 'EC', 'CGC', 'CGH', 'PTR', 
+                      'RLIC', 'FX', 'ACR', 'SLF', 'SCP', 'PCR', 'SS',  'GCC', 'SCC')))%>%
+  mutate(groups_sig = factor(contrast, levels = c('HC_ROP', 'CHR_HC')))%>%
+  mutate(contrast = factor(contrast, levels = c('HC_ROP', 'CHR_HC')))%>%
+  ggplot(aes(x = effect.size, y = contrast, fill = contrast))+
+  geom_bar(stat = 'identity', width = 0.8, 
+           position = position_dodge2(width = 0.1, preserve = "single"))+
+  theme_minimal(base_size = 12)+
+  scale_fill_manual(values = c('CHR_HC' = '#98c692',
+                               'HC_ROP' = '#8ba6b1'),
+                    breaks = c('CHR_HC', 'HC_ROP'),
+                    name = 'Group contrasts:\nSign refers to positive effect size',
+                    labels = c('CHR_HC' = 'HC > CHR',
+                               'HC_ROP' = 'HC > ROP'),
+                    guide = guide_legend(title.position = "top"))+
+  facet_grid(roi ~ ., switch = "y", 
+             labeller = labeller(roi = labels_rois)) +
+    # Set axis at both bottom and top
+  scale_x_continuous(sec.axis = dup_axis(name = "Adjusted effect size: measured as Cohen's d")) +
+  theme(
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, size = 7.5),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    legend.text = element_text(size = 7),    # Decrease legend text size
+    legend.title = element_text(size = 8),  # Decrease legend title size
+    legend.box.just = "left",  # Ensures the legend box aligns to the left
+    legend.margin = margin(t = -350, r = 0, b = 0, l = 0),
+    #legend.position = 'none',
+    plot.background = element_rect(fill = "white", color = NA),  # Set background to white
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing = unit(0.7, "lines"),
+    axis.line.y = element_line(color = "lightgray"),
+    plot.margin = unit(c(1, 1, 1, 1), "cm"), # Controls the plot margin
+    aspect.ratio = 1/8, # Adjust aspect ratio to make the plot narrower
+    axis.title.x.top = element_text(vjust = 1)   # Adjust top x-axis title
+  )+
+  xlab("Adjusted effect size: measured as Cohen's d")+
+  geom_vline(xintercept = seq(-0.2, 0.4, by = 0.1), color = "white")+
+  geom_errorbar(aes(xmin = ci_lower, xmax = ci_upper), 
+                position = position_dodge(width = 0.9), 
+                width = 0.2, 
+                color = "darkgrey")+
+  geom_text(aes(label = ifelse(significance == 'sig', "*", ""), 
+                x = effect.size + 0.05),  # Adjust 0.1 for space above the bar
+            position = position_dodge(width = 0.9), 
+            vjust = 0.75,
+            size = 16 / .pt)
+plot_brain_effsize
+```
+
+### Code: group comparison adjusted Cohen's d
+Since the jackknife analysis with different sites takes a long time to run, we 
+comment out the function here to speed up the code.
+```{r code_2_cohensd, echo = TRUE,fig.width=8,fig.height=13, warning = FALSE, message=FALSE}
+# # Here, we create the plot for FAt values per ROI represented as Cohen's d
+# 
+# # First, process p-values for the post hoc tests by creating 'group1' and 'group2' based on the contrast 
+# # and selecting relevant columns (roi, group1, group2, and p.value)
+# p_values <- result_posthoc_pp %>%
+#   mutate(group1 = case_when(contrast %in% 'CHR - ROP' ~ 'CHR',
+#                             contrast %in% 'CHR - HC' ~ 'CHR',
+#                             contrast %in% 'HC - ROP' ~ 'HC'),
+#          group2 = case_when(contrast %in% 'CHR - ROP' ~ 'ROP',
+#                             contrast %in% 'CHR - HC' ~ 'HC',
+#                             contrast %in% 'HC - ROP' ~ 'ROP'))%>%
+#   dplyr::select(roi, group1, group2, p.value)
+# 
+# # For effect size calculation, perform a similar process, but without the significance filtering step.
+# # Here, we calculate Cohen's d for all ROIs regardless of statistical significance
+# effect_size <- tbss_final_fat %>%
+#   dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+#   dplyr::select(-contains('Average'))%>%
+#   filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+#   pivot_longer(cols = rois, 
+#                names_to = 'roi', values_to = 'value') %>%
+#   group_by(roi) %>%
+#   do({
+#     anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+#     # look further into the different types of ANCOVA
+#     ANOVA_result <- Anova(anova_result, type = 3)
+#     if (ANOVA_result$`Pr(>F)`[2] < 0.05){
+#       significant_test <- 'yes'
+#     }else{
+#       significant_test <- 'no'
+#     }
+#     if (nrow(.) & significant_test == 'yes') {
+#       posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+#       effect_size <- eff_size(posthoc_result, sigma = sigma(anova_result), 
+#                               edf = df.residual(anova_result))
+#       data.frame(effect_size)
+#     } else {
+#       data.frame()
+#     }
+#   }) %>%
+#   ungroup()%>%
+#   mutate(group1 = case_when(contrast %in% '(CHR - ROP)' ~ 'CHR',
+#                             contrast %in% '(CHR - HC)' ~ 'CHR',
+#                             contrast %in% '(HC - ROP)' ~ 'HC'),
+#          group2 = case_when(contrast %in% '(CHR - ROP)' ~ 'ROP',
+#                             contrast %in% '(CHR - HC)' ~ 'HC',
+#                             contrast %in% '(HC - ROP)' ~ 'ROP'))%>%
+#   dplyr::select(roi, group1, group2, effect.size)%>%
+#   left_join(., p_values, by = c('group1', 'group2', 'roi'))
+# 
+# # Define which effect sizes refer to significant rois.
+# effect_size_corrected_all <- tbss_final_fat %>%
+#   dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+#   dplyr::select(-contains('Average'))%>%
+#   filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+#   pivot_longer(cols = rois, 
+#                names_to = 'roi', values_to = 'value') %>%
+#   group_by(roi) %>%
+#   do({
+#     anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+#     # look further into the different types of ANCOVA
+#     ANOVA_result <- Anova(anova_result, type = 3)
+#     posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+#     effect_size <- eff_size(posthoc_result, sigma = sigma(anova_result), 
+#                               edf = df.residual(anova_result))
+#       data.frame(effect_size)
+#       })%>%
+#   ungroup()%>%
+#   mutate(group1 = case_when(contrast %in% '(CHR - ROP)' ~ 'CHR',
+#                             contrast %in% '(CHR - HC)' ~ 'CHR',
+#                             contrast %in% '(HC - ROP)' ~ 'HC'),
+#          group2 = case_when(contrast %in% '(CHR - ROP)' ~ 'ROP',
+#                             contrast %in% '(CHR - HC)' ~ 'HC',
+#                             contrast %in% '(HC - ROP)' ~ 'ROP'))%>%
+#   dplyr::select(roi, group1, group2, effect.size)%>%
+#   left_join(., p_values, by = c('group1', 'group2', 'roi'))
+# 
+# # Function to perform jackknife analysis and calculate 95% CI for Cohen's d
+# jackknife_analysis <- function(df, contrast_predict, p_value_df){
+#   
+#   # Get unique sites
+#   unique_sites <- unique(df$Scan_site)
+#   
+#   # Initialize a list to store results
+#   results <- list()
+#   
+#   # Loop over each site to perform jackknife analysis
+#   for (site in unique_sites) {
+#     
+#     # Filter out the current site
+#     df_filtered <- df %>% filter(Scan_site != site)
+#     
+#     # Calculate Cohen's d
+#     #cohens_d_result <- calculate_cohensd(df_filtered, groups, p_value_df)
+#     effect_size_result <- df_filtered %>%
+#       dplyr::select(Studygroup, PSN, rois, age, sex) %>%
+#       dplyr::select(-contains('Average'))%>%
+#       filter(Studygroup %in% c('ROP', 'HC', 'CHR')) %>%
+#       pivot_longer(cols = rois, 
+#                names_to = 'roi', values_to = 'value') %>%
+#       group_by(roi) %>%
+#       do({
+#         anova_result <- aov(value ~ Studygroup + age + I(age^2) + sex, data = .)
+#         # look further into the different types of ANCOVA
+#         ANOVA_result <- Anova(anova_result, type = 3)
+#         if (ANOVA_result$`Pr(>F)`[2] < 0.05){
+#           significant_test <- 'yes'
+#           }else{
+#             significant_test <- 'no'
+#           }
+#         posthoc_result <- emmeans(anova_result, pairwise ~ Studygroup, adjust = 'fdr')
+#         effect_size <- eff_size(posthoc_result, sigma = sigma(anova_result), edf = df.residual(anova_result))
+#         data.frame(effect_size)
+#         }) %>%
+#       ungroup()%>%
+#       filter(contrast %in% contrast_predict)%>%
+#       mutate(group1 = case_when(contrast %in% '(CHR - ROP)' ~ 'CHR',
+#                                 contrast %in% '(CHR - HC)' ~ 'CHR',
+#                                 contrast %in% '(HC - ROP)' ~ 'HC'),
+#              group2 = case_when(contrast %in% '(CHR - ROP)' ~ 'ROP',
+#                                 contrast %in% '(CHR - HC)' ~ 'HC',
+#                                 contrast %in% '(HC - ROP)' ~ 'ROP'))%>%
+#       dplyr::select(roi, group1, group2, effect.size)%>%
+#       left_join(., p_value_df, by = c('group1', 'group2', 'roi'))
+#     # Store the result in the list, using the site as the key
+#     results[[site]] <- effect_size_result
+#   }
+#   
+#   # Initialize a list to store CIs
+#   ci_list <- list()
+#   
+#   # Loop over each ROI (assuming ROI names are consistent across sites)
+#   rois_loop <- unique(results[[1]]$roi)
+#   for (roi_name in rois_loop) {
+#     
+#     # Extract Cohen's d values for the current ROI across all sites
+#     cohens_d_values <- sapply(results, function(res) {
+#       res %>% filter(roi == roi_name) %>% pull(effect.size)
+#     })
+#     
+#     # Calculate mean Cohen's d
+#     mean_d <- mean(cohens_d_values)
+#     
+#     # Calculate standard error
+#     se_d <- sd(cohens_d_values) / sqrt(length(cohens_d_values))
+#     
+#     # Calculate 95% confidence interval
+#     ci_lower <- mean_d - 1.96 * se_d
+#     ci_upper <- mean_d + 1.96 * se_d
+#     
+#     # Store the results in a data frame
+#     ci_list[[roi_name]] <- data.frame(
+#       roi = roi_name,
+#       mean_cohens_d = mean_d,
+#       ci_lower = ci_lower,
+#       ci_upper = ci_upper
+#     )
+#   }
+#   
+#   # Combine all ROIs into one data frame
+#   ci_df <- do.call(rbind, ci_list)
+#   
+#   return(ci_df)
+# }
+# 
+# # Apply the jackknife analysis with CI calculation for each comparison
+# ci_rop_hc <- jackknife_analysis(tbss_final_fat, '(HC - ROP)', p_values)%>%
+#   mutate(contrast = 'HC_ROP')
+# ci_rop_chr <- jackknife_analysis(tbss_final_fat, c('(CHR - ROP)'), p_values)%>%
+#   mutate(contrast = 'CHR_ROP')
+# ci_hc_chr <- jackknife_analysis(tbss_final_fat, c('(CHR - HC)'), p_values)%>%
+#   mutate(contrast = 'CHR_HC')
+# 
+# ci_groups <- ci_rop_hc %>%
+#   rbind(., ci_rop_chr)%>%
+#   rbind(., ci_hc_chr)
+# 
+# groups_effsize <- effect_size_corrected_all %>%
+#   filter(!is.na(p.value))%>%
+#   dplyr::select(group1, group2, effect.size, roi, p.value)%>%
+#   unite('contrast', c(group1, group2), sep = '_')%>%
+#   mutate(significance = case_when(p.value < 0.05 ~ 'sig',
+#                                   p.value == 0.05|p.value > 0.05 ~ 'non'))%>%
+#   mutate(effect.size = case_when(contrast %in% 'CHR_HC' ~ effect.size*-1,
+#                              TRUE ~ effect.size))%>%
+#   unite('groups_sig', c(contrast, significance), sep = '_', remove = FALSE)%>%
+#   left_join(., ci_groups, by = c('contrast', 'roi'))%>%
+#   mutate(ci_lower = case_when(contrast %in% 'CHR_HC' ~ ci_lower*-1,
+#                               TRUE ~ ci_lower),
+#          ci_upper = case_when(contrast %in% 'CHR_HC' ~ ci_upper*-1,
+#                               TRUE ~ ci_upper))
+# 
+# labels_rois <- c(
+#   'ACR' = 'anterior corona\nradiata (ACR)',
+#   'ALIC' = 'anterior limb of\ninternal capsule (ALIC)',
+#   'BCC' = 'body of\ncorpus callosum (BCC)',
+#   'CGC' = 'cingulum (CGC)',
+#   'CGH' = 'cingulum\n(hippocampal portion) (CGH)',
+#   'CP' = 'cerebellar peduncle (CP)',
+#   'CST' = 'corticospinal\ntract (CST)',
+#   'EC' = 'external capsule (EC)',
+#   'FX' = 'fornix (FX)',
+#   'FX_ST' = 'fornix stria\nterminalis (FXST)',
+#   'GCC' = 'genu of\ncorpus callosum (GCC)',
+#   'ICP' = 'internal capsule (ICP)',
+#   'IFO' = 'inferior fronto\noccipital fasciculus (IFO)',
+#   'ML' = 'medial lemniscus (ML)',
+#   'PCR' = 'posterior\ncorona radiata (PCR)',
+#   'PLIC' = 'posterior limb of\ninternal capsule (PLIC)',
+#   'PTR' = 'posterior\nthalamic radiation (PTR)',
+#   'RLIC' = 'retrolenticular\npart of internal capsule (RLIC)',
+#   'SCC' = 'splenium of\ncorpus callosum (SCC)',
+#   'SCP' = 'superior\ncerebellar peduncle (SCP)',
+#   'SCR' = 'superior\ncorona radiata (SCR)',
+#   'SFO' = 'superior fronto-\noccipital fasciculus (SFO)',
+#   'SLF' = 'superior\nlongitudinal fasciculus (SLF)',
+#   'SS' = 'sagittal stratum (SS)',
+#   'UNC' = 'uncinate (UNC)'
+# )
+# plot_brain_effsize <- groups_effsize %>%
+#   # March 6h 25: delete all CHR_ROP contrasts
+#   filter(!contrast %in% 'CHR_ROP')%>%
+#   mutate(roi = 
+#            factor(roi, levels = 
+#                     c('FX_ST', 'ALIC', 'PLIC', 'CP', 'EC', 'CGC', 'CGH', 'PTR', 
+#                       'RLIC', 'FX', 'ACR', 'SLF', 'SCP', 'PCR', 'SS',  'GCC', 'SCC')))%>%
+#   mutate(groups_sig = factor(contrast, levels = c('HC_ROP', 'CHR_HC')))%>%
+#   mutate(contrast = factor(contrast, levels = c('HC_ROP', 'CHR_HC')))%>%
+#   ggplot(aes(x = effect.size, y = contrast, fill = contrast))+
+#   geom_bar(stat = 'identity', width = 0.8, 
+#            position = position_dodge2(width = 0.1, preserve = "single"))+
+#   theme_minimal(base_size = 12)+
+#   scale_fill_manual(values = c('CHR_HC' = '#98c692',
+#                                'HC_ROP' = '#8ba6b1'),
+#                     breaks = c('CHR_HC', 'HC_ROP'),
+#                     name = 'Group contrasts:\nSign refers to positive effect size',
+#                     labels = c('CHR_HC' = 'HC > CHR',
+#                                'HC_ROP' = 'HC > ROP'),
+#                     guide = guide_legend(title.position = "top"))+
+#   facet_grid(roi ~ ., switch = "y", 
+#              labeller = labeller(roi = labels_rois)) +
+#     # Set axis at both bottom and top
+#   scale_x_continuous(sec.axis = dup_axis(name = "Adjusted effect size: measured as Cohen's d")) +
+#   theme(
+#     strip.placement = "outside",
+#     strip.text.y.left = element_text(angle = 0, size = 7.5),
+#     axis.title.y = element_blank(),
+#     axis.text.y = element_blank(),
+#     legend.text = element_text(size = 7),    # Decrease legend text size
+#     legend.title = element_text(size = 8),  # Decrease legend title size
+#     legend.box.just = "left",  # Ensures the legend box aligns to the left
+#     legend.margin = margin(t = -350, r = 0, b = 0, l = 0),
+#     #legend.position = 'none',
+#     plot.background = element_rect(fill = "white", color = NA),  # Set background to white
+#     panel.grid.major = element_blank(),
+#     panel.grid.minor = element_blank(),
+#     panel.spacing = unit(0.7, "lines"),
+#     axis.line.y = element_line(color = "lightgray"),
+#     plot.margin = unit(c(1, 1, 1, 1), "cm"), # Controls the plot margin
+#     aspect.ratio = 1/8, # Adjust aspect ratio to make the plot narrower
+#     axis.title.x.top = element_text(vjust = 1)   # Adjust top x-axis title
+#   )+
+#   xlab("Adjusted effect size: measured as Cohen's d")+
+#   geom_vline(xintercept = seq(-0.2, 0.4, by = 0.1), color = "white")+
+#   geom_errorbar(aes(xmin = ci_lower, xmax = ci_upper), 
+#                 position = position_dodge(width = 0.9), 
+#                 width = 0.2, 
+#                 color = "darkgrey")+
+#   geom_text(aes(label = ifelse(significance == 'sig', "*", ""), 
+#                 x = effect.size + 0.05),  # Adjust 0.1 for space above the bar
+#             position = position_dodge(width = 0.9), 
+#             vjust = 0.75,
+#             size = 16 / .pt)
+```
+
+## {-}
+
+# {-}
