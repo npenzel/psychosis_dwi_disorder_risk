@@ -21,7 +21,7 @@ cat('
 
 # **About this report** {.unnumbered}
 ```{r, results = 'asis', message = FALSE, echo = FALSE, warning = FALSE}
-message_report <- 'In this report, we use simulated data to replicate the main analyses from Penzel & Cho et al. (2025). This allows you to follow the analysis steps without access to the real PRONIA data, which is not publicly available. You can find the simulation script in this GitHub repository and run it using pronia_psychosis_risk_dwi_simulation.Rmd. Ensure your working directory is set to the repository folder downloaded from: https://github.com/npenzel/PSYCHOSIS_DWI_RISK_DISORDER. To set the working directory: setwd("/path_to_your_directory/PSYCHOSIS_DWI_RISK_DISORDER/"). For details on methods, reasoning, and background, please refer to the manuscript.'
+message_report <- 'In this report, we use simulated data to replicate the main analyses from Penzel & Cho et al. (2025). This allows you to follow the analysis steps without access to the real PRONIA data, which is not publicly available. You can find the simulation script in this GitHub repository and run it using pronia_psychosis_risk_dwi_simulation.Rmd. Ensure your working directory is set to the repository folder downloaded from: https://github.com/npenzel/psychosis_dwi_disorder_risk. To set the working directory: setwd("/path_to_your_directory/psychosis_dwi_disorder_risk/"). For details on methods, reasoning, and background, please refer to the manuscript.'
 
 # Print the message in a styled text box
 cat(paste0('<div style="border: 2px solid #4CAF50; background-color: #eaffea; padding: 10px; border-radius: 5px; font-size: 13px;">', message_report, '</div>'))
