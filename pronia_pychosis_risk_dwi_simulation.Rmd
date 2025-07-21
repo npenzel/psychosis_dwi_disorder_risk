@@ -1069,8 +1069,8 @@ cv_cca_vars_rop_chr <- cca_vars_rop_chr %>%
 
 # if you have adapted the script and want to look into the data you can write 
 # out the datafor cross validation again. Otherwise let this part commented. 
-#write.csv(cv_cca_vars_rop_chr, 'simulated_data/cca_vars_rop_chr_for_cv.csv', row.names = FALSE)
-#write.csv(cv_cca_dti_rop_chr, 'simulated_data/cca_dti_rop_chr_for_cv.csv', row.names = FALSE)
+write.csv(rop_chr_vars, 'simulated_data/cca_vars_rop_chr_for_cv.csv', row.names = FALSE)
+write.csv(cv_cca_dti_rop_chr, 'simulated_data/cca_dti_rop_chr_for_cv.csv', row.names = FALSE)
 ```
 
 ### Result+Code: Nr (%) missing all

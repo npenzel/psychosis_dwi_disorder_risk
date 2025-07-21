@@ -1,0 +1,151 @@
+---
+title: "From Risk to Disorder: Diffusion-Weighted Imaging in Psychosis - simulated data, CV results"
+author: "Penzel N, Cho KIK et al., 2025"
+date: "`r Sys.Date()`"
+output: 
+  bookdown::html_document2:
+    toc: true  # Disable default TOC since you're creating a custom one
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+---
+
+```{r, echo=FALSE, results='asis'}
+cat('
+<div id="toc">
+  <!-- The TOC will be inserted here -->
+</div>
+<div id="content">
+')
+```
+
+# **About this report** {.unnumbered}
+```{r, results = 'asis', message = FALSE, echo = FALSE, warning = FALSE}
+message_report <- 'In this report we present the results of the CV on simulated data'
+
+# Print the message in a styled text box
+cat(paste0('<div style="border: 2px solid #4CAF50; background-color: #eaffea; padding: 10px; border-radius: 5px; font-size: 13px;">', message_report, '</div>'))
+```
+
+```{r setup, include=FALSE, warning = FALSE}
+# -----------------------------------------------------------------------------#
+#                 Data Loading and Initial Transformations                     #
+# -----------------------------------------------------------------------------#
+
+# Load necessary libraries
+
+library(gtsummary)
+library(tidyverse)
+library(ggsci)
+library(broom)
+library(tidyr)
+library(ggbeeswarm)
+library(kableExtra)
+library(car)
+library(AICcmodavg)
+library(lubridate)
+library(emmeans)
+library(data4PCCAR)
+library(MASS)
+library(CCA)
+library(grid)
+library(rstatix)
+library(psych)
+library(corrplot)
+library(ggcorrplot)
+library(cowplot)
+library(DT)
+
+CV_results <- readRDS('simulated_data/CV_results_simulation.rds')
+
+observed_results_train <- apply(CV_results$cc_train_mat, 2, mean, na.rm = TRUE)
+observed_results_test <- apply(CV_results$cc_obs_mat, 2, mean, na.rm = TRUE)
+p_value_train <- CV_results$emp_p_train
+p_value_test <- CV_results$emp_p_test
+p_value_train_cummax <- cummax(CV_results$emp_p_train)
+p_value_test_cummax <- cummax(CV_results$emp_p_test)
+
+results <- data.frame(component = c('component 1', 'component 2'),
+                      train_r = observed_results_train[1:2], 
+                      test_r = observed_results_test[1:2],
+                      train_p_uncorr = p_value_train,
+                      train_p_cummax = p_value_train_cummax,
+                      test_p_uncorr = p_value_test,
+                      test_p_cummax = p_value_test_cummax)
+```
+
+# Result investigation
+Here, we investigate the result of the cross-validation
+
+## Overall and specific results   {.tabset}
+
+### Results (r and p-value)
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+print(results)
+```
+
+### Alignment of components across CV
+indicates how often across the cross validation folds and permutations is the right component aligned, e.g., component 1 in cross validation is mostly correlated with component 1 in the full sample CV. We did this analysis as an additional test for teh robustnuss of our findings.
+```{r echo = FALSE,fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$alignment_summary
+```
+
+### Alignment of components across CV in permutation analysis
+indicates how often across the cross validation folds and permutations is the right component aligned, e.g., component 1 in cross validation is mostly correlated with component 1 in the full sample CV. We did this analysis as an additional test for teh robustnuss of our findings.
+```{r echo = FALSE,fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$alignment_summary_perm
+```
+
+### Sign-flip across components
+indicates how often across the cross validation folds and permutations is the sign flipped, e.g., component 1 is positive in full sample but negative in the fold. We did this analysis as an additional test for teh robustnuss of our findings. Here, TRUE indicates there was a sign flip and FALSE indicates there was no sign flip.
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$signflip_summary
+```
+
+### Sign-flip across components in permutation analysis
+indicates how often across the cross validation folds and permutations is the sign flipped, e.g., component 1 is positive in full sample but negative in the fold. We did this analysis as an additional test for teh robustnuss of our findings. Here, TRUE indicates there was a sign flip and FALSE indicates there was no sign flip.
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$signflip_summary_perm
+```
+
+### Real vs permuted: Component 1, training
+The bar plots indicate the null distribution of canonical correlations (i.e., 1000 x permuted data) whereas the red vertical line indicates the canonical correlation of the real data.
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$null_dist_train[,1]%>%
+  as.data.frame(.)%>%
+  ggplot(aes(x = `.`))+
+  geom_histogram()+
+  geom_vline(xintercept = results$train_r[1], linetype = "dashed", color = "red", size = 1)
+```
+
+### Real vs permuted: Component 2, training
+The bar plots indicate the null distribution of canonical correlations (i.e., 1000 x permuted data) whereas the red vertical line indicates the canonical correlation of the real data.
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$null_dist_train[,2]%>%
+  as.data.frame(.)%>%
+  ggplot(aes(x = `.`))+
+  geom_histogram()+
+  geom_vline(xintercept = results$train_r[2], linetype = "dashed", color = "red", size = 1)
+```
+
+### Real vs permuted: Component 1, test
+The bar plots indicate the null distribution of canonical correlations (i.e., 1000 x permuted data) whereas the red vertical line indicates the canonical correlation of the real data.
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$null_dist[,1]%>%
+  as.data.frame(.)%>%
+  ggplot(aes(x = `.`))+
+  geom_histogram()+
+  geom_vline(xintercept = results$test_r[1], linetype = "dashed", color = "red", size = 1)
+```
+
+### Real vs permuted: Component 2, test
+The bar plots indicate the null distribution of canonical correlations (i.e., 1000 x permuted data) whereas the red vertical line indicates the canonical correlation of the real data.
+```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
+CV_results$null_dist[,2]%>%
+  as.data.frame(.)%>%
+  ggplot(aes(x = `.`))+
+  geom_histogram()+
+  geom_vline(xintercept = results$test_r[2], linetype = "dashed", color = "red", size = 1)
+```
+
+## {-}

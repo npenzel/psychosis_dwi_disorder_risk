@@ -1,0 +1,197 @@
+# Cross validation for upload to github in simulated data.
+
+# ---------------------------------------------------------------------------- #
+#                         Cross-validate the CCA                               #
+# ---------------------------------------------------------------------------- #
+
+# To cross-validate our CCA analysis, we load the data that was written out 
+# within the main script: pronia_psychosis_risk_dwi_simulation.Rmd
+
+cca_dwi_rop_chr_cv <- read.csv('simulated_data/cca_dti_rop_chr_for_cv.csv')
+cca_vars_rop_chr_cv <- read.csv('simulated_data/cca_vars_rop_chr_for_cv.csv')
+
+# load standard packages
+library(tidyverse)
+library(CCA)
+library(caret)
+library(dplyr)
+library(clue)
+
+
+# load functions. check that your working directory (getwd()) is your github
+# repository.
+source('cv_function/center_cv_function.R')
+source('cv_function/impute_cv_function.R')
+source('cv_function/align_and_singflip_function.R')
+source('cv_function/create_cv_folds_function.R')
+source('cv_function/run_cca_cv_function.R')
+source('center_function.R')
+source('cca_function.R')
+source('permute_cca_function.R')
+
+
+# Subset the DWI (diffusion-weighted imaging) measure by arranging and processing the dataset
+df2shuffle <- cca_vars_rop_chr_cv %>% 
+  column_to_rownames('PSN')%>%
+  arrange(studygroup_num)
+
+# Create an ordered dataframe for studygroup labels and PSN
+df2order <- cca_vars_rop_chr_cv %>% 
+  arrange(studygroup_num)%>%
+  dplyr::select(PSN, studygroup_num)
+
+# Merge the DWI dataset with the group labels and arrange the data accordingly
+dwi2shuffle <- cca_dwi_rop_chr_cv %>%
+  left_join(., df2order, by = 'PSN')%>%
+  arrange(studygroup_num)%>%
+  dplyr::select(-studygroup_num)%>%
+  column_to_rownames('PSN')
+
+# Set the number of folds and repetitions for cross-validation
+n_folds <- 10 
+n_repeats <- 5 
+
+# Initialize an empty list to store cross-validation results
+cv_splits <- list()
+
+# Set seed for reproducibility to ensure the same splits each time
+set.seed(123)  # Set a seed for reproducibility
+
+# Prepare the data for CCA (Canonical Correlation Analysis) 
+vars_original <- df2shuffle %>%
+  as.matrix(.) # Original cohort predictors
+vars_imputed <- df2shuffle %>%
+  mutate(across(everything(), ~ as.numeric(.)))%>%
+  group_by(studygroup_num)%>%
+  mutate(across(-(c(uhr_1stdegree_re)), 
+                ~ case_when(is.na(.) ~ mean(., na.rm = TRUE),
+                            TRUE ~ .)),
+         uhr_1stdegree_re = 
+           case_when(is.na(uhr_1stdegree_re) ~ 
+                       median(uhr_1stdegree_re, na.rm = TRUE),
+                     TRUE ~ uhr_1stdegree_re))%>%
+  ungroup()%>%
+  as.matrix(.) # Original cohort predictors
+dwi_original <- dwi2shuffle  %>%
+  as.matrix(.)# Original cohort outcomes
+
+# Step 1: Run full-sample CCA on unshuffled data
+# Create fixed folds outside for consistency across permutations
+# Build fixed folds once
+folds_list <- create_cv_folds(nrow(dwi_original),
+                              n_folds   = n_folds,
+                              n_repeats = n_repeats,
+                              seed      = 123)
+
+# Reference CCA (unshuffled). This CCA is run to test alignment and sign flip
+# in the CV
+overall_cca <- permcca_winkler(vars_imputed, dwi_original, 1, TRUE)
+ref_X <- overall_cca$cwl
+ref_Y <- overall_cca$cwr
+
+# Observed CV performance
+res_obs <- run_cv_cca(vars_original, dwi_original, folds_list, ref_X, ref_Y)
+cc_obs_mat <- res_obs$cc_test_all
+cc_train_mat <- res_obs$cc_train_all
+
+# count and run the asignment:
+alignment_summary <- apply(res_obs$alignment_history, 2, function(col) {
+  tab <- table(col)
+  prop <- round(100 * tab / length(col), 2)
+  list(percentages = prop)
+})
+
+sign_flip_summary <- apply(res_obs$signflip_matrix, 2, function(col) {
+  tab <- table(col)
+  prop <- round(100 * tab / length(col), 2)
+  list(percentages = prop)
+})
+
+# test only the 2 first components: significant in the whole sample,
+# no sign-flip needed to be applied, 1st component no misalignment in 100 %,
+# second component no misalignment in 98 % 
+
+# maybe i could use as a main argument besides the significance that only the
+# first 2 components are stable in terms of which components they are
+
+cc_obs_mean <- colMeans(cc_obs_mat, na.rm = TRUE)
+cc_train_mat_mean <- colMeans(cc_train_mat, na.rm = TRUE)
+
+# Permutation loop
+n_perm <- 1000
+# define the number of components that you want to test for generalizability.
+# Here, we test K=2 for the two significant components in the whole sample CCA.
+K_number = 2
+null_dist <- matrix(NA, n_perm, K_number)
+null_dist_train <- matrix(NA, n_perm, K_number)
+loglik_null_dist <- matrix(NA, nrow = n_perm, ncol = K_number)
+
+cc_test_all_folds <- vector("list", n_perm)
+cc_train_all_folds <- vector("list", n_perm)
+alignment_all_perm <- list()
+signflip_all_perm <- list()
+
+for (p in 1:n_perm) {
+  cat("Permutation", p, "/", n_perm, "\n")
+  dwi_perm <- dwi_original[sample(nrow(dwi_original)), ]
+  
+  perm_cca <- permcca_winkler(vars_imputed, dwi_perm, 1, TRUE)
+  perm_ref_X <- perm_cca$cwl
+  perm_ref_Y <- perm_cca$cwr
+  
+  res_perm_obs <- run_cv_cca(vars_original, dwi_original, 
+                             folds_list, ref_X, ref_Y,
+                             K = K_number, permute_Y = TRUE)
+  cc_perm_obs_mat <- res_perm_obs$cc_test_all
+  cc_perm_train_mat <- res_perm_obs$cc_train_all
+  
+  null_dist[p, ] <- colMeans(cc_perm_obs_mat, na.rm = TRUE)
+  null_dist_train[p, ] <- colMeans(cc_perm_train_mat, na.rm = TRUE)
+  
+  # Store entire fold-wise results
+  cc_test_all_folds[[p]] <- cc_perm_obs_mat
+  cc_train_all_folds[[p]] <- cc_perm_train_mat
+  
+  # store signflip and alignment history
+  alignment_all_perm[[p]] <- res_perm_obs$alignment_history  # e.g. [folds x K]
+  signflip_all_perm[[p]] <- res_perm_obs$signflip_matrix     # e.g. [folds x K]
+  
+}
+
+emp_p_test <- sapply(1:K_number, \(k)
+                     (sum(null_dist[, k] >= cc_obs_mean[k]) + 1) / (n_perm + 1))
+print('Test: p-values')
+print(cummax(emp_p_test))
+emp_p_train <- sapply(1:K_number, \(k)
+                      (sum(null_dist_train[, k] >= cc_train_mat_mean[k]) + 1) / (n_perm + 1))
+print('Train: p-values')
+print(cummax(emp_p_train))
+
+alignment_all_combined <- do.call(rbind, alignment_all_perm)
+signflip_all_combined <- do.call(rbind, signflip_all_perm)
+
+alignment_summary_perm <- apply(alignment_all_combined, 2, function(col) {
+  tab <- table(col)
+  prop <- round(100 * tab / length(col), 2)
+  list(percentages = prop)
+})
+
+signflip_summary_perm <- apply(signflip_all_combined, 2, function(col) {
+  tab <- table(col)
+  prop <- round(100 * tab / length(col), 2)
+  list(percentages = prop)
+})
+
+# save the different results to in-between data to present them in an html output.
+CV_results <- list(alignment_summary = alignment_summary, 
+                   alignment_summary_perm = alignment_summary_perm, 
+                   signflip_summary = sign_flip_summary, 
+                   signflip_summary_perm = signflip_summary_perm,
+                   null_dist = null_dist, 
+                   null_dist_train = null_dist_train, 
+                   cc_train_mat = cc_train_mat, 
+                   cc_obs_mat = cc_obs_mat, 
+                   emp_p_test = emp_p_test, 
+                   emp_p_train = emp_p_train)
+
+saveRDS(CV_results, file = 'simulated_data/CV_results_simulation.rds')
