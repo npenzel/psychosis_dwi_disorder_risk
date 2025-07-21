@@ -654,7 +654,7 @@ cc_obs_mean <- colMeans(cc_obs_mat, na.rm = TRUE)
 cc_train_mat_mean <- colMeans(cc_train_mat, na.rm = TRUE)
 
 # Permutation loop
-n_perm <- 1000
+n_perm <- 10
 #K      <- length(cc_obs_mean)
 # we will test the first two components that were significant in the whole 
 # sample and also showed 98% reproducibility across folds.
@@ -723,44 +723,43 @@ signflip_summary_perm <- apply(signflip_all_combined, 2, function(col) {
 ggplot(data.frame(cc = null_dist[, 1]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Null distribution, Test-1",
        x = "Correlation", y = "Count")
 ggplot(data.frame(cc = null_dist[, 2]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Null distribution, Test-2",
        x = "Correlation", y = "Count")
 ggplot(data.frame(cc = null_dist_train[, 1]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Null distribution, Train-1",
        x = "Correlation", y = "Count")
 ggplot(data.frame(cc = null_dist_train[, 2]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Null distribution, Train-2",
        x = "Correlation", y = "Count")
 
-# test for the sign flip:
-ggplot(data.frame(cc = cc_obs_mat[, 1]), aes(x = cc)) +
-  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
-       x = "Correlation", y = "Count")
 ggplot(data.frame(cc = cc_train_mat[, 1]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Train-1",
+       x = "Correlation", y = "Count")
+ggplot(data.frame(cc = cc_obs_mat[, 1]), aes(x = cc)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Test-1",
        x = "Correlation", y = "Count")
 ggplot(data.frame(cc = cc_train_mat[, 2]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Train-2",
        x = "Correlation", y = "Count")
 ggplot(data.frame(cc = cc_obs_mat[, 2]), aes(x = cc)) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Distribution of Fold-wise Canonical Correlations",
+  labs(title = "Distribution of Fold-wise Canonical Correlations, Test-2",
        x = "Correlation", y = "Count")
 
 # test the permutations:

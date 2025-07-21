@@ -95,6 +95,10 @@ rop_fat_sim <- pronia_sim %>%
 chr_fat_sim <- pronia_sim %>%
   filter(Studygroup %in% 'CHR')
 
+# Select ROD (recent-onset depression) data for further analysis
+rod_fat_sim <- pronia_sim %>%
+  filter(Studygroup %in% 'ROD')
+
 # -----------------------------------------------------------------------------#
 #           Model Testing in Healthy Controls (HC) - FA-t Predictions           #
 # -----------------------------------------------------------------------------#
@@ -139,6 +143,11 @@ predicted_fat_chr <- chr_fat_sim %>%
   mutate(predicted_fat = predict(quadratic_fat, data.frame(age, sex)))%>% # you can also do prediction-interval
   mutate(deviation_fat = AverageFAt - predicted_fat)
 
+# Apply the quadratic model to the clinical high-risk (CHR) group
+predicted_fat_rod <- rod_fat_sim %>%
+  mutate(predicted_fat = predict(quadratic_fat, data.frame(age, sex)))%>% # you can also do prediction-interval
+  mutate(deviation_fat = AverageFAt - predicted_fat)
+
 # Apply the quadratic model to the healthy controls (HC) again for consistency
 predicted_fat_hc <- hc_fat_sim %>%
   mutate(predicted_fat = predict(quadratic_fat, data.frame(age, sex)))%>% # you can also do prediction-interval
@@ -152,6 +161,8 @@ predicted_fat_hc <- hc_fat_sim %>%
 predict_rop_fat_all <- rop_fat_sim %>%
   dplyr::select(PSN)
 predict_chr_fat_all <- chr_fat_sim %>%
+  dplyr::select(PSN)
+predict_rod_fat_all <- rod_fat_sim %>%
   dplyr::select(PSN)
 predict_hc_fat_all  <- hc_fat_sim %>%
   dplyr::select(PSN)
@@ -202,6 +213,22 @@ for (i in 1:length(rois_average_fat)){
                              paste0(rois_average_fat[i], '_dev'))
   predict_chr_fat_all <- predict_chr_fat_all %>% # combine the different rois
     cbind(chr2predict)
+
+  # Apply the model to the ROD group
+  rod2predict <- rod_fat_sim %>%
+    dplyr::select(rois_average_fat[i], age, sex)%>% # first select the vars of interest
+    rename(independent_var = rois_average_fat[i], # rename them that they match the HC-model names
+           age_var = age, 
+           sex_var = sex)%>%
+    mutate(sex_var = as.character(sex_var))%>%
+    mutate(predicted_fat_roi = predict(predict_hc, data.frame(age_var, sex_var)),# apply the HC-model
+           deviation         = independent_var - predicted_fat_roi)%>%  
+    dplyr::select(-c(age_var, sex_var)) 
+  # remove the variables from the data-frame that are not needed
+  colnames(rod2predict) <- c(rois_average_fat[i], paste0(rois_average_fat[i], '_predicted'),
+                             paste0(rois_average_fat[i], '_dev'))
+  predict_rod_fat_all <- predict_rod_fat_all %>% # combine the different rois
+    cbind(rod2predict)
   
   # Apply the model to the HC group (for comparison)
   hc2predict <- hc_fat_sim %>%
@@ -232,12 +259,17 @@ rop_final_fat <- predict_rop_fat_all %>%
 chr_final_fat <- predict_chr_fat_all %>%
   dplyr::select(c(PSN, ends_with('predicted'), ends_with('dev')))
 
+# Combine the predicted FA-t values and deviations for CHR group
+rod_final_fat <- predict_rod_fat_all %>%
+  dplyr::select(c(PSN, ends_with('predicted'), ends_with('dev')))
+
 # Combine the predicted FA-t values and deviations for HC group
 hc_final_fat <- predict_hc_fat_all %>%
   dplyr::select(c(PSN, ends_with('predicted'), ends_with('dev')))
 
 # Merge the ROP, CHR, and HC prediction dataframes by row binding them
 rop_chr_hc_fat <- rop_final_fat %>%
+  rbind(., rod_final_fat) %>%
   rbind(., chr_final_fat) %>%
   rbind(., hc_final_fat)
 
@@ -443,7 +475,7 @@ Here, we investigate the data in terms of normality, distribution and associatio
 ```{r echo = FALSE,fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
 # Average FAt for the three groups
 tbss_final_fat %>%
-  filter(Studygroup %in% c('CHR', 'HC', 'ROP'))%>%
+  filter(Studygroup %in% c('CHR', 'HC', 'ROP', 'ROD'))%>%
   ggplot(aes(x = Studygroup, y = AverageFAt, fill = Studygroup))+
   ggdist::stat_halfeye(
     adjust = 0.5, 
@@ -453,7 +485,7 @@ tbss_final_fat %>%
   geom_boxplot(width = .12, outlier.color = 'black', alpha = 0.5)+
   theme(axis.title.x = element_blank(),
         legend.position = 'bottom')+
-  scale_x_discrete(limits = c('HC','CHR','ROP'),
+  scale_x_discrete(limits = c('HC','CHR','ROP', 'ROD'),
                    labels = c("CHR" = "clinical\nhigh-risk\nN=183",
                               "ROP" = "recent-onset\npsychosis\nN=206",
                               'HC' = 'healthy\ncontrols\nN=298'))+
@@ -469,9 +501,9 @@ tbss_final_fat %>%
 
 ### Code
 ```{r echo = TRUE, fig.width=8,fig.height=5, warning = FALSE, message=FALSE}
-# Filter the data to include only the three groups: 'CHR', 'HC', and 'ROP'
+# Filter the data to include only the four groups: 'CHR', 'HC', 'ROP', and 'ROD'
 tbss_final_fat %>%
-  filter(Studygroup %in% c('CHR', 'HC', 'ROP'))%>%
+  filter(Studygroup %in% c('CHR', 'HC', 'ROP', 'ROD'))%>%
   # Create a ggplot with 'Studygroup' on the x-axis and 'AverageFAt' on the y-axis
   ggplot(aes(x = Studygroup, y = AverageFAt, fill = Studygroup))+
   # Add a half-eye plot from the ggdist package for visualizing the distribution
@@ -487,7 +519,7 @@ tbss_final_fat %>%
   # Customize the axis titles and legend position
   theme(axis.title.x = element_blank(),
         legend.position = 'bottom')+
-  scale_x_discrete(limits = c('HC','CHR','ROP'),
+  scale_x_discrete(limits = c('HC','CHR','ROP', 'ROD'),
                    labels = c("CHR" = "clinical\nhigh-risk\nN=183",
                               "ROP" = "recent-onset\npsychosis\nN=206",
                               'HC' = 'healthy\ncontrols\nN=298'))+
@@ -1104,7 +1136,7 @@ rop_chr_vars %>%
 
 ### Result+Code: Permutation analysis
 In a recent review, Wang et al. (2020) described a permutation procedure for Canonical Correlation Analysis (CCA) as "a random shuffling of the rows of the two variable sets" (Winkler et al., 2020). Winkler et al. (2020) argue that simple permutation tests for CCA lead to excessive error rates for all canonical correlations except the first, as such tests fail to account for the variance explained by previous canonical variables. They propose a solution that involves estimating canonical correlations stepwise, removing explained variance at each iteration while addressing different numbers of variables on each side. While Winkler et al. (2020) provided MATLAB code, we have translated it into R (see functions on GitHub).
-```{r permute_cca, echo = FALSE, warning = FALSE, messages = FALSE, results = TRUE}
+```{r permute_cca, echo = TRUE, warning = FALSE, messages = FALSE, results = TRUE}
 permuted_cca_rop_chr <- permcca_winkler(as.matrix(cca_vars_rop_chr), 
                                         as.matrix(cca_dti_rop_chr), 
                                         1000,
@@ -1600,6 +1632,153 @@ plot_loadings_individually(cca_projections, x_var = 'clin_V1', y_var = 'dwi_V1',
                            x_label = 'loadings mode 1: clinical',
                            y_label = 'loadings mode 1:\nwhite-matter microstructure',
                            saving_label = 'plot_loading1')
+```
+
+### Application to ROD
+```{r apply to ROD}
+# analysis:
+rod_vars <- tbss_final_fat %>%
+  filter(Studygroup %in% c('ROD'))%>%
+  mutate(sex_num = case_when(sex == 'male' ~ 0,
+                             sex == 'female' ~ 1))%>%
+  # first change the variables so that always the higher the better:
+  mutate(sips_p_t0_re = -sips_p_t0,
+         sips_n_t0_re = -sips_n_t0,
+         sips_g_t0_re = -sips_g_t0,
+         sips_d_t0_re = -sips_d_t0,
+         spia_sum_t0_re = -spia_sum_t0,
+         bdi_t0_re = -bdi_t0,
+         CPZE_cum_sum_re = -CPZE_cum_sum,
+         exposome_score_re = -exposome_score)%>%
+  mutate(uhr_1stdegree_re = case_when(uhr_1stdegree == 1 ~ 0,
+                                      uhr_1stdegree == 0 ~ 1))%>%
+  dplyr::select(PSN, Studygroup, 
+                GAF_DI_PastMonth_Screening, 
+                GAF_DI_LifeTime_Screening,
+                GAF_S_PastMonth_Screening, 
+                GAF_S_LifeTime_Screening,
+                sips_p_t0_re, 
+                sips_n_t0_re, 
+                sips_g_t0_re, 
+                sips_d_t0_re, 
+                spia_sum_t0_re,
+                bdi_t0_re,
+                CPZE_cum_sum_re, 
+                exposome_score_re,
+                uhr_1stdegree_re,
+                wais_mr, 
+                wais_v
+                )%>%
+  rowwise() %>%
+  mutate(across(everything(.), ~ as.character(.)))%>%
+  filter(!sum(is.na(c_across())) == ncol(.) - 2)%>%
+  mutate(studygroup_num = case_when(Studygroup %in% 'ROD' ~ 0.5))%>%
+  ungroup()%>%
+  dplyr::select(-Studygroup)
+# impute the missing values
+### impute for ROD based on ROP+CHR
+# Get group-wise means and median for imputation
+impute_means <- rop_chr_vars %>%
+  mutate(across(-c(PSN), ~ as.numeric(.))) %>%
+  summarise(across(-(c(uhr_1stdegree_re, PSN, studygroup_num)), mean, na.rm = TRUE))
+
+get_mode <- function(x) {
+  ux <- na.omit(unique(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+impute_mod <- rop_chr_vars %>%
+  summarise(mod = get_mode(uhr_1stdegree_re)) %>%
+  pull(mod)
+
+rod_vars_imputed <- rod_vars %>%
+  mutate(across(-c(PSN, uhr_1stdegree_re, studygroup_num), ~ ifelse(is.na(.), impute_means[[cur_column()]], .))) %>%
+  mutate(uhr_1stdegree_re = ifelse(is.na(uhr_1stdegree_re), impute_mod, uhr_1stdegree_re))
+
+cca_vars_rod <- rod_vars_imputed %>%
+  column_to_rownames('PSN')%>%
+  # dplyr::select(-studygroup_num)%>%
+  mutate(across(everything(), ~ as.numeric(.)))
+
+# prepare dti:
+rod_dti <- tbss_final_fat %>%
+  filter(Studygroup %in% c('ROD'))%>%
+  dplyr::select(PSN, Studygroup, significant_rois_names_3groups$roi_names)%>%
+  filter(PSN %in% rod_vars$PSN)
+cca_dti_rod <- rod_dti %>% 
+  dplyr::select(-c(Studygroup, contains('Average')))%>%
+  column_to_rownames('PSN')
+
+
+# ---------------------------------------------------------------------------- #
+# Apply the CCA to the ROD group.
+# ---------------------------------------------------------------------------- #
+# create this with perm_winkler:
+
+perm_projected_test_set <- function(Y_train, X_train, Y_test, X_test, nP = 1000, Pset_test = NULL) {
+  # Y_train: original data from training matrix 1 (here vars)
+  # X_train: original data from training matrix 2 (here dwi)
+  # Y_test: external data from test matrix 1 (here vars, ROD)
+  # X_test: external data from test matrix 2 (here dwi, ROD)
+  
+  # Step 1: Fit CCA on training set using permcca_winkler (but we just need canonical weights)
+  train_result <- permcca_winkler(Y_train, X_train, 1, TRUE)  # No permutation here
+  
+  A <- train_result$cwl  # Canonical weights (Y side)
+  B <- train_result$cwr  # Canonical weights (X side)
+  
+  # Step 2: Center test data using training means
+  Y_test_centered <- sweep(Y_test, 2, colMeans(Y_train), "-")
+  X_test_centered <- sweep(X_test, 2, colMeans(X_train), "-")
+  
+  # Step 3: Project test data
+  Y_test_proj <- Y_test_centered %*% A
+  X_test_proj <- X_test_centered %*% B
+  
+  true_cc <- diag(cor(Y_test_proj, X_test_proj))
+  
+  # Step 4: Permute and compute null distribution
+  set.seed(123)
+  n_test <- nrow(Y_test_centered)
+
+  K <- length(true_cc)
+  perm_cc <- matrix(NA, nrow = nP, ncol = K)
+  
+  for (p in 1:nP) {
+    if (is.null(Pset_test)) {
+      idx <- sample(n_test)
+    } else {
+      idx <- as.matrix(Pset_test[, p, drop = FALSE])
+    }
+    
+    Y_perm <- Y_test_centered[idx, ]
+    Y_perm_proj <- Y_perm %*% A
+    
+    perm_cc[p, ] <- diag(cor(Y_perm_proj, X_test_proj))
+  }
+  
+  # Step 5: Empirical p-values
+  # Uncorrected p-values
+  p_uncorrected <- colMeans(sweep(perm_cc, 2, true_cc, FUN = ">="))
+  
+  p_fwer_stepdown <- cummax(p_uncorrected)
+
+  return(list(
+  canonical_correlations_test = true_cc,
+  permuted_distributions = perm_cc,
+  p_values_uncorrected = p_uncorrected,
+  p_values_fwer_stepdown = p_fwer_stepdown,
+  A = A,
+  B = B
+  ))
+}
+rod_result <- perm_projected_test_set(as.matrix(cca_vars_rop_chr), as.matrix(cca_dti_rop_chr),
+                                      as.matrix(cca_vars_rod), as.matrix(cca_dti_rod))
+#rod_result_final <- data.frame(rod_result$p_values,
+#                               rod_result$canonical_correlations_test)
+rod_result_final <- data.frame(rod_result$p_values_fwer_stepdown,
+                               rod_result$p_values_uncorrected,
+                               rod_result$canonical_correlations_test)
+print(rod_result_final)
 ```
 
 ## {-}
