@@ -41,3 +41,14 @@ cd psychosis_dwi_disorder_risk
 ## How to work with the scripts
 make sure that you set the working directory to where you have saved **psychosis_dwi_disorder_risk** (setwd()).
 
+- 2 html files show the results of the actual publication: 1.) pronia_psychosis_risk_dwi_paper.html, 2.) pronia_psychosis_cv_results_paper.html.
+
+- Both have an accompanying html file along with the .Rmd file that was used to create them: 1.) pronia_psychosis risk_dwi_simulation.html/.Rmd and 2.) pronia_psychosis_cv_results_simulation.html/.Rmd. These two scripts and html files can be used to follow the analyses step by step.
+
+- The script pronia_psychosis_risk_dwi_crossvalidate_simulation.R showcases on the simulated data all steps of the cross validation. 
+
+- Additionally, there are several functions saved used for the CCA analysis and the tests of robustness, feature importance etc. (bootstrap_cca_function.R, cca_function.R, center_function.R, permute_cca_function.R, permute_dataset.R)
+
+- In the folder cv_function you can find all scripts that were used in the cross-validation of the CCA analysis as called by the script pronia_psychosis_risk_dwi_crossvalidate_simulation.R
+
+- In the folder simulated_data, you can find the simulated data for this study, the permutation indexes created with permute_dataset.R and intermediate results.
