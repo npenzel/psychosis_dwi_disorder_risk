@@ -71,4 +71,5 @@ simulated_data/
       - Intermediate result files
       - simulate_date.R: script to generate new simulated data
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
