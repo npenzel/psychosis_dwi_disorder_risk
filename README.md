@@ -4,7 +4,9 @@ From Risk to Disorder: Diffusion-Weighted Imaging in Psychosis
 This repository contains code and documentation for the analyses presented 
 in our study on diffusion-weighted imaging (DWI) and psychosis risk, using 
 simulated data and canonical correlation analysis (CCA).
+
 This study was led by *Nora Penzel, Kevin Kang Ik Cho*, Johanna Seitz-Holland, Anne Ruef, Giuseppe Cabras, Pedro Costa Klein, Linda A. Antonucci, Dominic Dwyer, Linda T. Betz, Shalaila Haas, Suheyla Cetin Karayumak, Fan Zhang, Grace Jacobs, Maria F Urquijo Castro, Ulrich Ettinger, Peter Falkai, Giulio Pergola, Rachel Upthegrove, Stefan Borgwardt, Paolo Brambilla, Rebekka Lencer, Eva Meisenzahl, Frauke Schultze-Lutter, Marlene Rosen, Theresa Lichtenstein, Lana Kambeitz-Ilankovic, Stephan Ruhrmann, Raimo R. K. Salokangas, Christos Pantelis, Stephen J. Wood, Alessandro Bertolino, Nikolaos Koutsouleris, *Ofer Pasternak, Joseph Kambeitz* and the PRONIA Consortium. XXX, 2025.
+
 Data for this project comes from the PRONIA study and is currently not publicly available. Details on the analytic approach can be found in the published article. In case of questions, please do not hesitate to contact us: [npenzel@mgh.harvard.edu](mailto:npenzel@mgh.harvard.edu)
 
 How to Use
