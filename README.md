@@ -52,3 +52,5 @@ make sure that you set the working directory to where you have saved **psychosis
 - In the folder cv_function you can find all scripts that were used in the cross-validation of the CCA analysis as called by the script pronia_psychosis_risk_dwi_crossvalidate_simulation.R
 
 - In the folder simulated_data, you can find the simulated data for this study, the permutation indexes created with permute_dataset.R and intermediate results.
+
+- The script simulate_date.R is used to create the simulated data that can be found in the folder simulated_data.
